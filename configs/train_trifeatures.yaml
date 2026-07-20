@@ -5,7 +5,7 @@ mode: "train"
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto" # Accelerator given to pytorch-lightning Trainer (eg `cpu` or `gpu`)
-  strategy: "ddp"
+  strategy: "ddp_find_unused_parameters_true"
   devices: "auto"
   num_nodes: 1 # Number of distributed nodes
   max_epochs: 100

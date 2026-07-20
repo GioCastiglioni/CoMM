@@ -1,4 +1,4 @@
-name: CoMM
+name: WoMM
 
 model:
   _target_: pl_modules.womm.WoMM
@@ -20,4 +20,4 @@ model:
 
   loss_kwargs: # CoMM loss
     use_rbf: False
-    sigreg_weight: 0.01
+    sigreg_weight: 0.05

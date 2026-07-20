@@ -7,7 +7,7 @@ import torch
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import WandbLogger
 from evaluation.linear_probe import LinearProbingCallback
 
 
@@ -29,7 +29,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     kwargs = dict()
 
-    if cfg.model.name== "CoMM":
+    if cfg.model.name== "CoMM" or cfg.model.name== "WoMM":
         kwargs["encoder"] = {
             "encoders": instantiate(cfg.model.encoders),
             "input_adapters": instantiate(cfg.model.adapters)}
@@ -63,7 +63,7 @@ def main(cfg: DictConfig):
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
-        logger=[TensorBoardLogger(build_root_dir(cfg), name="logs")],
+        logger=[WandbLogger(project="CoMM-LeJEPA", name="trifeatures")],
         callbacks=[LinearProbingCallback(downstream_data_modules,
                                          names=downstream_names,
                                          val_loaders=False)]

@@ -22,12 +22,13 @@ class TrifeaturesDataModule(LightningDataModule):
                  augment: Optional[Tuple[str]] = None,
                  **kwargs):
         """
-        :param model: {'Sup', 'CLIP', 'CrossSelf', 'CoMM'}
+        :param model: {'Sup', 'CLIP', 'CrossSelf', 'CoMM', 'WoMM'}
             The model defines the augmentations to apply:
                 - Sup: no augmentation, returns the image + label(s)
                 - CLIP: no augmentation, returns pairs of modalities
                 - CrossSelf: pairs of augmented images + original
                 - CoMM: augmented pairs of modalities
+                - WoMM: augmented pairs of modalities
         :param dataset: either "bimodal" or "unimodal"
         :param batch_size: Batch size to pass to Dataloaders
         :param num_workers: Number of workers to pass to Dataloaders
@@ -125,7 +126,7 @@ class TrifeaturesDataModule(LightningDataModule):
                                       augment=self.augment, **kwargs)
             self.val_dataset = dset(root, split="test", transform=self.img_transform,
                                     augment=self.augment, **kwargs)
-        elif self.model == "CoMM":
+        elif self.model == "CoMM" or self.model == "WoMM":
             dset = TrifeaturesMMSSL if dataset == "unimodal" else BimodalTrifeaturesMMSSL
             if dataset == "unimodal":
                 kwargs.update(text_augment=(lambda x: x))
