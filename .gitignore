@@ -3,6 +3,7 @@
 **/lightning_logs/
 **/wandb/
 **/checkpoints/
-
-*.ipynb
 **/demo/
+*.ipynb
+*.json
+**/CoMM_A/
