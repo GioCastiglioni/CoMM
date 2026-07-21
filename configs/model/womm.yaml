@@ -18,6 +18,6 @@ model:
     mlp_dim: 512 # Hidden dim of MLP projection head
     out_dim: 256 # Output embed dim of MLP projection head
 
-  loss_kwargs: # CoMM loss
+  loss_kwargs:
     use_rbf: False
     sigreg_weight: 0.05

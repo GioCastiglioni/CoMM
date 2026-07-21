@@ -63,7 +63,7 @@ def main(cfg: DictConfig):
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
-        logger=[WandbLogger(project="CoMM-LeJEPA", name="trifeatures")],
+        logger=[WandbLogger(project="trifeatures", name=cfg.model.name)],
         callbacks=[LinearProbingCallback(downstream_data_modules,
                                          names=downstream_names,
                                          val_loaders=False)]
