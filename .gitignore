@@ -3,6 +3,5 @@
 **/lightning_logs/
 **/wandb/
 **/checkpoints/
-*.json
 **/CoMM_A/
 **/CoMM-LeJEPA/
