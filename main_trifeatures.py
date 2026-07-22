@@ -71,8 +71,11 @@ def main(cfg: DictConfig):
 
     if cfg.mode == "train":
         trainer.fit(model, datamodule=data_module)
+        ckpt_path = "best"
     else:
-        trainer.test(model, datamodule=data_module, ckpt_path=getattr(cfg, "ckpt_path", None))
+        ckpt_path = getattr(cfg, "ckpt_path", None)
+
+    trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
 
 
 def build_root_dir(cfg: DictConfig):
@@ -81,7 +84,7 @@ def build_root_dir(cfg: DictConfig):
 
     # modify `root_dir` if in test mode to match pre-trained model's path
     if cfg.mode == "test":
-        if cfg.ckpt_path is None:
+        if getattr(cfg, "ckpt_path", None) is None:
             print(UserWarning("`ckpt_path` is not set during testing."))
         else:
             root_dir = os.path.join(os.path.dirname(cfg.ckpt_path), "test")
