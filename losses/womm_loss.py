@@ -16,7 +16,7 @@ class WoMMLoss(nn.Module):
         LeJEPA Similarity and Regularization Loss adapted for Multi-Modal Learning
         Maintains the original CoMM data ingestion structure.
     """
-    def __init__(self, weights=None, use_rbf=False, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05):
+    def __init__(self, weights=None, use_rbf=False, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, stop_grad=False):
         super().__init__()
         self.weights = weights
         self.use_rbf = use_rbf
@@ -24,6 +24,7 @@ class WoMMLoss(nn.Module):
         self.sigma_min = sigma_min
         self.sigma = sigma_max
         self.sigreg_weight = sigreg_weight
+        self.stop_grad=stop_grad
         
         self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=4096)
 
@@ -64,8 +65,8 @@ class WoMMLoss(nn.Module):
         loss_sim = []
         
         for i in range(n_emb):
-            loss1 = self.k_sim(z1[i], z2[prototype])
-            loss2 = self.k_sim(z2[i], z1[prototype])
+            loss1 = self.k_sim(z1[i], z2[prototype].detach() if self.stop_grad else z2[prototype])
+            loss2 = self.k_sim(z2[i], z1[prototype].detach() if self.stop_grad else z1[prototype])
             loss_sim.append((loss1 + loss2) / 2.)
             
         losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
