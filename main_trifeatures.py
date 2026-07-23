@@ -60,7 +60,7 @@ def main(cfg: DictConfig):
     data_module = instantiate(cfg.data.data_module, model=cfg.model.name)
 
     # Linear probing on each tasks from BimodalTrifeatures
-    downstream_names = ["share", "unique1", "unique2", "synergy"]
+    downstream_names = ["share", "synergy"] if cfg.data.data_module.biased else ["share", "unique1", "unique2"]
     downstream_data_modules = [instantiate(cfg.data.data_module, model="Sup", biased=False, task=t)
                                for t in downstream_names]
     # Trainer + fit
