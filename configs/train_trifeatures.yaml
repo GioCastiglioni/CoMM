@@ -11,7 +11,7 @@ trainer:
   max_epochs: 100
   default_root_dir: "."
   use_distributed_sampler: false
-  deterministic: false
+  deterministic: true
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 1
   inference_mode: false # avoid weird bugs during linear probing

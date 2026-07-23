@@ -7,6 +7,7 @@ import torch
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
+import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from evaluation.linear_probe import LinearProbingCallback
 
@@ -22,9 +23,12 @@ def main(cfg: DictConfig):
         - CrossSelf
     """
 
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
     # fix the seed for repro
-    torch.manual_seed(cfg.seed)
-    np.random.seed(cfg.seed)
+    pl.seed_everything(cfg.seed, workers=True)
 
     # create model + save hyper-parameters
     kwargs = dict()
