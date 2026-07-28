@@ -13,10 +13,10 @@ def all_reduce(tensor, op="AVG"):
 
 class WoMMLoss(nn.Module):
     """
-        LeJEPA Similarity and Regularization Loss adapted for Multi-Modal Learning
+        Multimodal Similarity and Regularization Loss adapted.
         Maintains the original CoMM data ingestion structure.
     """
-    def __init__(self, weights=None, use_rbf=False, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, stop_grad=False):
+    def __init__(self, weights=None, use_rbf=False, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, K=4096, stop_grad=False, visreg=False):
         super().__init__()
         self.weights = weights
         self.use_rbf = use_rbf
@@ -25,8 +25,12 @@ class WoMMLoss(nn.Module):
         self.sigma = sigma_max
         self.sigreg_weight = sigreg_weight
         self.stop_grad=stop_grad
+        self.K=K
+        self._cached_B = -1
+        self._cached_target = None
+        self.visreg=visreg
         
-        self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=4096)
+        self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
     def step(self, current_epoch, total_epochs):
         if self.use_rbf:
@@ -56,9 +60,6 @@ class WoMMLoss(nn.Module):
         assert len(z1) == len(z2)
         n_emb = len(z1)
         
-        z1 = [z for z in z1]
-        z2 = [z for z in z2]
-        
         Z = all_gather_batch_with_grad(z1 + z2)
         z1, z2 = Z[:n_emb], Z[n_emb:]
 
@@ -76,13 +77,40 @@ class WoMMLoss(nn.Module):
         else:
             total_sim_loss = torch.mean(torch.stack(loss_sim))
             
-        # dim: [2 * n_emb * N, D]
-        z_all_global = torch.cat(Z, dim=0)
-        loss_sigreg = self.sigreg(z_all_global)
-        
-        total_loss = total_sim_loss + (self.sigreg_weight * loss_sigreg)
+        if self.visreg:
+            loss_sigreg = 0.5 * (self.forward_visreg(torch.stack(z1, dim=0)) + self.forward_visreg(torch.stack(z2, dim=0)))
+        else:
+            # dim: [2 * n_emb * N, D]
+            z_all_global = torch.cat(Z, dim=0)
+            loss_sigreg = self.sigreg(z_all_global) 
+        total_loss = (1-self.sigreg_weight) * total_sim_loss + self.sigreg_weight * loss_sigreg
         
         return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_sigreg": loss_sigreg, **losses_dict}
+
+    def forward_visreg(self, z: torch.Tensor) -> torch.Tensor:
+        _, B, D = z.shape
+
+        mu = z.mean(dim=1, keepdim=True)
+        center_loss = mu.pow(2).mean()
+
+        z_centered = z - mu
+        std = z_centered.norm(dim=1).div(math.sqrt(B)).clamp_min(1e-6)
+        scale_loss = (std - 1.0).pow(2).mean()
+
+        z_norm = z_centered / std.detach().unsqueeze(1)
+        W = func.normalize(torch.randn(D, self.K, device=z.device, dtype=z.dtype), dim=0)
+        p_sorted = (z_norm @ W).sort(dim=1).values
+        target = self._get_target(B, z.device).view(1, B, 1)
+        shape_loss = (p_sorted - target).pow(2).mean()
+
+        return 0.9*scale_loss + 1.2*shape_loss + 0.9 * center_loss
+
+    def _get_target(self, B: int, device) -> torch.Tensor:
+        if self._cached_B != B:
+            q = torch.linspace(1, B, B, device=device, dtype=torch.float32) / (B + 1)
+            self._cached_target = torch.erfinv(2 * q - 1).mul_(math.sqrt(2))
+            self._cached_B = B
+        return self._cached_target.to(device=device)
 
     def __str__(self):
         return "{}(use_rbf={})".format(type(self).__name__, self.use_rbf)

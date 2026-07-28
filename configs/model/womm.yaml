@@ -20,6 +20,7 @@ model:
 
   loss_kwargs:
     use_rbf: False
+    visreg: False
     sigreg_weight: 0.05
     weights: [1.0, 1.0, 1.0]
     stop_grad: False
