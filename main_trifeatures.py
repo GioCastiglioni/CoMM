@@ -9,6 +9,7 @@ import torch.optim
 import torch.utils.data
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
+import wandb
 from evaluation.linear_probe import LinearProbingCallback
 
 
@@ -23,9 +24,9 @@ def main(cfg: DictConfig):
         - CrossSelf
     """
 
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    #torch.backends.cudnn.benchmark = False
+    #torch.backends.cudnn.deterministic = True
+    #torch.use_deterministic_algorithms(True, warn_only=True)
 
     # fix the seed for repro
     pl.seed_everything(cfg.seed, workers=True)
@@ -67,7 +68,14 @@ def main(cfg: DictConfig):
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
-        logger=[WandbLogger(project="trifeatures", name=cfg.model.name)],
+        logger=[
+            WandbLogger(project="trifeatures-128",
+                        name=str(cfg.model.name)+ \
+                            str("_sigreg" if not cfg.model.model.loss_kwargs.visreg else "_visreg")+ \
+                                str("_rbf" if cfg.model.model.loss_kwargs.use_rbf else "_mse")+ \
+                                    str("_sg" if cfg.model.model.loss_kwargs.stop_grad else "")+ \
+                                        f"_reg-weight_{cfg.model.model.loss_kwargs.sigreg_weight}"+ \
+                                            str("_biased" if cfg.data.data_module.biased else ""))],
         callbacks=[LinearProbingCallback(downstream_data_modules,
                                          names=downstream_names,
                                          val_loaders=False)]
@@ -80,6 +88,7 @@ def main(cfg: DictConfig):
         ckpt_path = getattr(cfg, "ckpt_path", None)
 
     trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
+    wandb.finish()
 
 
 def build_root_dir(cfg: DictConfig):
