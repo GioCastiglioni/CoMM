@@ -69,13 +69,13 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
         logger=[
-            WandbLogger(project="trifeatures-128",
+            WandbLogger(project="Trifeatures",
                         name=str(cfg.model.name)+ \
-                            str("_sigreg" if not cfg.model.model.loss_kwargs.visreg else "_visreg")+ \
-                                str("_rbf" if cfg.model.model.loss_kwargs.use_rbf else "_mse")+ \
-                                    str("_sg" if cfg.model.model.loss_kwargs.stop_grad else "")+ \
-                                        f"_reg-weight_{cfg.model.model.loss_kwargs.sigreg_weight}"+ \
-                                            str("_biased" if cfg.data.data_module.biased else ""))],
+                            f"_{str(cfg.model.model.loss_kwargs.reconstruction)}"+ \
+                                f"_{str(cfg.model.model.loss_kwargs.regularization)}"+ \
+                                    f"_{str(cfg.model.model.loss_kwargs.reg_weight)}"+ \
+                                        str("_biased" if cfg.data.data_module.biased else "_unbiased"))+ \
+                                            str("_sg" if cfg.model.model.loss_kwargs.stop_grad else "")],
         callbacks=[LinearProbingCallback(downstream_data_modules,
                                          names=downstream_names,
                                          val_loaders=False)]
