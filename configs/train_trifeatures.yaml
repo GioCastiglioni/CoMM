@@ -5,13 +5,13 @@ mode: "train"
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto" # Accelerator given to pytorch-lightning Trainer (eg `cpu` or `gpu`)
-  strategy: "ddp_find_unused_parameters_true"
+  strategy: "auto"
   devices: "auto"
   num_nodes: 1 # Number of distributed nodes
   max_epochs: 100
   default_root_dir: "."
   use_distributed_sampler: false
-  deterministic: true
+  deterministic: false
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 1
   inference_mode: false # avoid weird bugs during linear probing
@@ -19,6 +19,10 @@ trainer:
 optim:
   lr: 3e-4
   weight_decay: 1e-4
+  lr_scheduler:
+    warmup_epochs: 5
+    start_warmup_value: 1e-8
+    final_value: 1e-8
 
 
 # Define default visual encoders for bimodal trifeatures dataset
