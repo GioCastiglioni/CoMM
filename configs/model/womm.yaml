@@ -4,7 +4,7 @@ model:
   _target_: pl_modules.womm.WoMM
   encoder: # Multi-modal model to be trained
     _target_: models.mmfusion.MMFusion
-    embed_dim: 40
+    embed_dim: 512
     fusion: "concat"
     pool: "cls"
     n_heads: 8
@@ -19,8 +19,12 @@ model:
     out_dim: 256 # Output embed dim of MLP projection head
 
   loss_kwargs:
-    use_rbf: False
-    visreg: False
-    sigreg_weight: 0.05
-    weights: [1.0, 1.0, 1.0]
+    reconstruction: "mse"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
+    regularization: "sigreg"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples'
+    reg_weight: 0.05
+    temperature: 0.1
+    sigma_max: 2.0
+    sigma_min: 0.5
+    K: 4096
+    weights: null
     stop_grad: False

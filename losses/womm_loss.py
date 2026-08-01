@@ -12,82 +12,107 @@ def all_reduce(tensor, op="AVG"):
     return tensor
 
 class WoMMLoss(nn.Module):
-    """
-        Multimodal Similarity and Regularization Loss adapted.
-        Maintains the original CoMM data ingestion structure.
-    """
-    def __init__(self, weights=None, use_rbf=False, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, K=4096, stop_grad=False, visreg=False):
+    def __init__(
+        self, 
+        weights=None, 
+        reconstruction='mse', 
+        regularization='sigreg', 
+        temperature=0.1,
+        sigma_max=2.0, 
+        sigma_min=0.5, 
+        reg_weight=0.05, 
+        K=4096, 
+        stop_grad=False,
+        vicreg_inv_coeff=25.0,
+        vicreg_std_coeff=25.0,
+        vicreg_cov_coeff=1.0
+    ):
         super().__init__()
         self.weights = weights
-        self.use_rbf = use_rbf
+        self.reconstruction = reconstruction
+        self.regularization = regularization
+        self.temperature = temperature
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.sigma = sigma_max
-        self.sigreg_weight = sigreg_weight
-        self.stop_grad=stop_grad
-        self.K=K
+        self.reg_weight = reg_weight
+        self.stop_grad = stop_grad
+        self.K = K
+        self.INF = 1e8
+        
+        self.vicreg_std_coeff = vicreg_std_coeff
+        self.vicreg_cov_coeff = vicreg_cov_coeff
+        self.vicreg_inv_coeff = vicreg_inv_coeff
+        
         self._cached_B = -1
         self._cached_target = None
-        self.visreg=visreg
         
-        self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
+        if self.regularization == 'sigreg':
+            self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
     def step(self, current_epoch, total_epochs):
-        if self.use_rbf:
+        if self.reconstruction == 'rbf':
             self.sigma = self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1 + math.cos(math.pi * current_epoch / total_epochs))
 
-    def k_sim(self, x, y):
+    def calc_similarity(self, x, y):
         # dim: [N, D]
-        mse = func.mse_loss(x, y, reduction='none').mean(dim=-1) 
-        
-        if self.use_rbf:
+        if self.reconstruction == 'mse':
+            return func.mse_loss(x, y, reduction='none').mean(dim=-1)
+        elif self.reconstruction == 'l1':
+            return func.l1_loss(x, y, reduction='none').mean(dim=-1)
+        elif self.reconstruction == 'huber':
+            return func.huber_loss(x, y, reduction='none').mean(dim=-1)
+        elif self.reconstruction == 'rbf':
+            mse = func.mse_loss(x, y, reduction='none').mean(dim=-1)
             correntropy = torch.exp(-mse / (2 * self.sigma ** 2))
-            return 1.0 - correntropy.mean()
-        
-        return mse.mean()
-
-    def forward(self, outputs):
-        """
-        :param outputs: Dict
-            Dictionary with keys:
-                - "aug1_embed", List of tensors with shape (bsize, feature_dim), 1st aug.
-                - "aug2_embed", List of tensors with shape (bsize, feature_dim), 2nd aug.
-                - "prototype", integer indicating where the multimodal representation Z 
-                    is stored in "aug1_embed" and "aug2_embed".
-        :return: {"loss": torch.Tensor(float), "loss_sim": torch.Tensor(float), "loss_sigreg": torch.Tensor(float)}
-        """
-        z1, z2, prototype = outputs["aug1_embed"], outputs["aug2_embed"], outputs["prototype"]
-        assert len(z1) == len(z2)
-        n_emb = len(z1)
-        
-        Z = all_gather_batch_with_grad(z1 + z2)
-        z1, z2 = Z[:n_emb], Z[n_emb:]
-
-        loss_sim = []
-        
-        for i in range(n_emb):
-            loss1 = self.k_sim(z1[i], z2[prototype].detach() if self.stop_grad else z2[prototype])
-            loss2 = self.k_sim(z2[i], z1[prototype].detach() if self.stop_grad else z1[prototype])
-            loss_sim.append((loss1 + loss2) / 2.)
+            return 1.0 - correntropy
+        elif self.reconstruction == 'cosine':
+            x = [func.normalize(z, p=2, dim=-1) for z in x]
+            y = [func.normalize(z, p=2, dim=-1) for z in y]
+            return - (x * y).sum(dim=-1) / self.temperature
             
-        losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
+        raise ValueError(f"Unknown reconstruction metric: {self.reconstruction}")
+
+    def calc_neg_samples_reg(self, x, y):
+        # dim: [N, D]
+        N = len(x)
+
+        x = [func.normalize(z, p=2, dim=-1) for z in x]
+        y = [func.normalize(z, p=2, dim=-1) for z in y]
         
-        if self.weights is not None:
-            total_sim_loss = torch.mean(torch.stack(loss_sim) * torch.tensor(self.weights, device=z1[0].device))
-        else:
-            total_sim_loss = torch.mean(torch.stack(loss_sim))
-            
-        if self.visreg:
-            loss_sigreg = 0.5 * (self.forward_visreg(torch.stack(z1, dim=0)) + self.forward_visreg(torch.stack(z2, dim=0)))
-        else:
-            # dim: [2 * n_emb * N, D]
-            z_all_global = torch.cat(Z, dim=0)
-            loss_sigreg = self.sigreg(z_all_global) 
-        total_loss = (1-self.sigreg_weight) * total_sim_loss + self.sigreg_weight * loss_sigreg
+        sim_xx = (x @ x.T) / self.temperature
+        sim_yy = (y @ y.T) / self.temperature
+        sim_xy = (x @ y.T) / self.temperature
         
-        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_sigreg": loss_sigreg, **losses_dict}
+        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
+        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
+        
+        sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
+        sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
+        sim_Z = torch.cat([sim_Z1, sim_Z2], dim=0)
+        
+        return torch.logsumexp(sim_Z, dim=1).mean()
+
+    def off_diagonal(self, x):
+        n, m = x.shape
+        assert n == m
+        return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+    def forward_vicreg(self, z: torch.Tensor) -> torch.Tensor:
+        # dim: [N, D]
+        N, D = z.shape
+        z = z - z.mean(dim=0)
+        
+        std_z = torch.sqrt(z.var(dim=0) + 1e-04)
+        std_loss = torch.mean(func.relu(1.0 - std_z))
+        
+        cov_z = (z.T @ z) / (N - 1)
+        cov_loss = self.off_diagonal(cov_z).pow_(2).sum().div(D)
+        
+        return (self.vicreg_std_coeff * std_loss) + (self.vicreg_cov_coeff * cov_loss)
 
     def forward_visreg(self, z: torch.Tensor) -> torch.Tensor:
+        # dim: [M, B, D]
         _, B, D = z.shape
 
         mu = z.mean(dim=1, keepdim=True)
@@ -103,7 +128,7 @@ class WoMMLoss(nn.Module):
         target = self._get_target(B, z.device).view(1, B, 1)
         shape_loss = (p_sorted - target).pow(2).mean()
 
-        return 0.9*scale_loss + 1.2*shape_loss + 0.9 * center_loss
+        return 0.9 * scale_loss + 1.2 * shape_loss + 0.9 * center_loss
 
     def _get_target(self, B: int, device) -> torch.Tensor:
         if self._cached_B != B:
@@ -112,9 +137,63 @@ class WoMMLoss(nn.Module):
             self._cached_B = B
         return self._cached_target.to(device=device)
 
-    def __str__(self):
-        return "{}(use_rbf={})".format(type(self).__name__, self.use_rbf)
+    def forward(self, outputs):
+        z1, z2, prototype = outputs["aug1_embed"], outputs["aug2_embed"], outputs["prototype"]
+        assert len(z1) == len(z2)
+        n_emb = len(z1)            
+        
+        Z = all_gather_batch_with_grad(z1 + z2)
+        z1_all, z2_all = Z[:n_emb], Z[n_emb:]
 
+        loss_sim = []
+        loss_reg_local = []
+        
+        for i in range(n_emb):
+            tgt1 = z2_all[prototype].detach() if self.stop_grad else z2_all[prototype]
+            tgt2 = z1_all[prototype].detach() if self.stop_grad else z1_all[prototype]
+
+            sim1 = self.calc_similarity(z1_all[i], tgt1).mean()
+            sim2 = self.calc_similarity(z2_all[i], tgt2).mean()
+            loss_sim.append((sim1 + sim2) / 2.0)
+            
+            if self.regularization == 'neg-samples':
+                reg1 = self.calc_neg_samples_reg(z1_all[i], tgt1)
+                reg2 = self.calc_neg_samples_reg(z2_all[i], tgt2)
+                loss_reg_local.append((reg1 + reg2) / 2.0)
+            
+        losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
+        w_tensor = torch.tensor(self.weights, device=z1_all[0].device) if self.weights is not None else None
+        
+        if w_tensor is not None:
+            total_sim_loss = torch.mean(torch.stack(loss_sim) * w_tensor)
+        else:
+            total_sim_loss = torch.mean(torch.stack(loss_sim))
+
+        total_sim_loss = (self.vicreg_inv_coeff if self.regularization == 'vicreg' else 1.0) * total_sim_loss
+        
+        if self.regularization == 'visreg':
+            loss_reg = 0.5 * (self.forward_visreg(torch.stack(z1_all, dim=0)) + self.forward_visreg(torch.stack(z2_all, dim=0)))
+        elif self.regularization == 'vicreg':
+            z1_global = torch.cat(z1_all, dim=0)
+            z2_global = torch.cat(z2_all, dim=0)
+            loss_reg = 0.5 * (self.forward_vicreg(z1_global) + self.forward_vicreg(z2_global))
+        elif self.regularization == 'sigreg':
+            z_all_global = torch.cat(Z, dim=0)
+            loss_reg = self.sigreg(z_all_global) 
+        elif self.regularization == 'neg-samples':
+            if w_tensor is not None:
+                loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)
+            else:
+                loss_reg = torch.mean(torch.stack(loss_reg_local))
+        else:
+            loss_reg = torch.tensor(0.0, device=z1_all[0].device)
+            
+        total_loss = (1 - self.reg_weight) * total_sim_loss + self.reg_weight * loss_reg
+        
+        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg, **losses_dict}
+
+    def __str__(self):
+        return "{}(rec={}, reg={})".format(type(self).__name__, self.reconstruction, self.regularization)
 
 class SlicingUnivariateTest(torch.nn.Module):
     def __init__(
@@ -167,7 +246,6 @@ class SlicingUnivariateTest(torch.nn.Module):
         elif self.reduction is None:
             return stats
 
-
 class UnivariateTest(torch.nn.Module):
     def __init__(self, eps: float = 1e-5, sorted: bool = False):
         super().__init__()
@@ -190,7 +268,6 @@ class UnivariateTest(torch.nn.Module):
         if dist.is_available() and dist.is_initialized():
             return dist.get_world_size()
         return 1
-
 
 class EppsPulley(UnivariateTest):
     def __init__(
