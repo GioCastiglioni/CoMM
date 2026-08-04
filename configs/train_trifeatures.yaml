@@ -15,6 +15,7 @@ trainer:
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 1
   inference_mode: false # avoid weird bugs during linear probing
+  precision: "bf16-mixed"
 
 optim:
   lr: 3e-4
