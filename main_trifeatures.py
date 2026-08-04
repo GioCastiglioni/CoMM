@@ -74,8 +74,8 @@ def main(cfg: DictConfig):
                             f"_{str(cfg.model.model.loss_kwargs.reconstruction)}"+ \
                                 f"_{str(cfg.model.model.loss_kwargs.regularization)}"+ \
                                     f"_{str(cfg.model.model.loss_kwargs.reg_weight)}"+ \
-                                        str("_biased" if cfg.data.data_module.biased else "_unbiased"))+ \
-                                            str("_sg" if cfg.model.model.loss_kwargs.stop_grad else "")],
+                                        str("_biased" if cfg.data.data_module.biased else "_unbiased")+ \
+                                            str("_sg" if cfg.model.model.loss_kwargs.stop_grad else ""))],
         callbacks=[LinearProbingCallback(downstream_data_modules,
                                          names=downstream_names,
                                          val_loaders=False)]
