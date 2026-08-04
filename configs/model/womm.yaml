@@ -20,7 +20,7 @@ model:
 
   loss_kwargs:
     reconstruction: "mse"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
-    regularization: "sigreg"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples'
+    regularization: "sigreg"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware'
     reg_weight: 0.05
     temperature: 0.1
     sigma_max: 2.0

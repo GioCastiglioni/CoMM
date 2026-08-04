@@ -67,9 +67,9 @@ class WoMMLoss(nn.Module):
             correntropy = torch.exp(-mse / (2 * self.sigma ** 2))
             return 1.0 - correntropy
         elif self.reconstruction == 'cosine':
-            x = [func.normalize(z, p=2, dim=-1) for z in x]
-            y = [func.normalize(z, p=2, dim=-1) for z in y]
-            return - (x * y).sum(dim=-1) / self.temperature
+            x_norm = func.normalize(x, p=2, dim=-1)
+            y_norm = func.normalize(y, p=2, dim=-1)
+            return - (x_norm * y_norm).sum(dim=-1) / self.temperature
             
         raise ValueError(f"Unknown reconstruction metric: {self.reconstruction}")
 
@@ -77,16 +77,47 @@ class WoMMLoss(nn.Module):
         # dim: [N, D]
         N = len(x)
 
-        x = [func.normalize(z, p=2, dim=-1) for z in x]
-        y = [func.normalize(z, p=2, dim=-1) for z in y]
+        x_norm = func.normalize(x, p=2, dim=-1)
+        y_norm = func.normalize(y, p=2, dim=-1)
         
-        sim_xx = (x @ x.T) / self.temperature
-        sim_yy = (y @ y.T) / self.temperature
-        sim_xy = (x @ y.T) / self.temperature
+        sim_xx = (x_norm @ x_norm.T) / self.temperature
+        sim_yy = (y_norm @ y_norm.T) / self.temperature
+        sim_xy = (x_norm @ y_norm.T) / self.temperature
         
         sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
         sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
         
+        sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
+        sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
+        sim_Z = torch.cat([sim_Z1, sim_Z2], dim=0)
+        
+        return torch.logsumexp(sim_Z, dim=1).mean()
+
+    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=0.5):
+        # dim: [N, D]
+        N = len(x)
+
+        x_norm = func.normalize(x, p=2, dim=-1)
+        y_norm = func.normalize(y, p=2, dim=-1)
+        
+        cos_xx = x_norm @ x_norm.T
+        cos_yy = y_norm @ y_norm.T
+        cos_xy = x_norm @ y_norm.T
+        
+        # Stop-gradient semantic prior estimation
+        with torch.no_grad():
+            prior_xx = torch.clamp(cos_xx, min=0.0)
+            prior_yy = torch.clamp(cos_yy, min=0.0)
+            prior_xy = torch.clamp(cos_xy, min=0.0)
+            
+        sim_xx = (cos_xx - semantic_margin * prior_xx) / self.temperature
+        sim_yy = (cos_yy - semantic_margin * prior_yy) / self.temperature
+        sim_xy = (cos_xy - semantic_margin * prior_xy) / self.temperature
+        
+        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
+        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
+        
+        # Matrix shape: [2N, 2N]
         sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
         sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
         sim_Z = torch.cat([sim_Z1, sim_Z2], dim=0)
@@ -160,6 +191,12 @@ class WoMMLoss(nn.Module):
                 reg1 = self.calc_neg_samples_reg(z1_all[i], tgt1)
                 reg2 = self.calc_neg_samples_reg(z2_all[i], tgt2)
                 loss_reg_local.append((reg1 + reg2) / 2.0)
+
+            if self.regularization == 'sem-aware':
+                reg1 = self.calc_semantic_neg_samples_reg(z1_all[i], tgt1)
+                reg2 = self.calc_semantic_neg_samples_reg(z2_all[i], tgt2)
+                loss_reg_local.append((reg1 + reg2) / 2.0)
+                
             
         losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
         w_tensor = torch.tensor(self.weights, device=z1_all[0].device) if self.weights is not None else None
@@ -180,7 +217,7 @@ class WoMMLoss(nn.Module):
         elif self.regularization == 'sigreg':
             z_all_global = torch.cat(Z, dim=0)
             loss_reg = self.sigreg(z_all_global) 
-        elif self.regularization == 'neg-samples':
+        elif self.regularization == 'neg-samples' or self.regularization == 'sem-aware':
             if w_tensor is not None:
                 loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)
             else:
