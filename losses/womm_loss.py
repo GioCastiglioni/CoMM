@@ -79,8 +79,8 @@ class WoMMLoss(nn.Module):
         sim_yy = (y_norm @ y_norm.T) / self.temperature
         sim_xy = (x_norm @ y_norm.T) / self.temperature
         
-        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
-        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
+        sim_xx = sim_xx - self.INF * torch.eye(N, device=x_norm.device)
+        sim_yy = sim_yy - self.INF * torch.eye(N, device=x_norm.device)
         
         sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
         sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
@@ -106,8 +106,8 @@ class WoMMLoss(nn.Module):
         sim_yy = (cos_yy - semantic_margin * prior_yy) / self.temperature
         sim_xy = (cos_xy - semantic_margin * prior_xy) / self.temperature
         
-        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
-        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
+        sim_xx = sim_xx - self.INF * torch.eye(N, device=x_norm.device)
+        sim_yy = sim_yy - self.INF * torch.eye(N, device=x_norm.device)
         
         # Matrix shape: [2N, 2N]
         sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
