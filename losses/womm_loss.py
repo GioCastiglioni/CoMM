@@ -67,18 +67,13 @@ class WoMMLoss(nn.Module):
             correntropy = torch.exp(-mse / (2 * self.sigma ** 2))
             return 1.0 - correntropy
         elif self.reconstruction == 'cosine':
-            x_norm = func.normalize(x, p=2, dim=-1)
-            y_norm = func.normalize(y, p=2, dim=-1)
-            return - (x_norm * y_norm).sum(dim=-1) / self.temperature
+            return - (x * y).sum(dim=-1) / self.temperature
             
         raise ValueError(f"Unknown reconstruction metric: {self.reconstruction}")
 
-    def calc_neg_samples_reg(self, x, y):
+    def calc_neg_samples_reg(self, x_norm, y_norm):
         # dim: [N, D]
-        N = len(x)
-
-        x_norm = func.normalize(x, p=2, dim=-1)
-        y_norm = func.normalize(y, p=2, dim=-1)
+        N = len(x_norm)
         
         sim_xx = (x_norm @ x_norm.T) / self.temperature
         sim_yy = (y_norm @ y_norm.T) / self.temperature
@@ -93,12 +88,9 @@ class WoMMLoss(nn.Module):
         
         return torch.logsumexp(sim_Z, dim=1).mean()
 
-    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=0.5):
+    def calc_semantic_neg_samples_reg(self, x_norm, y_norm, semantic_margin=0.5):
         # dim: [N, D]
-        N = len(x)
-
-        x_norm = func.normalize(x, p=2, dim=-1)
-        y_norm = func.normalize(y, p=2, dim=-1)
+        N = len(x_norm)
         
         cos_xx = x_norm @ x_norm.T
         cos_yy = y_norm @ y_norm.T
@@ -171,7 +163,11 @@ class WoMMLoss(nn.Module):
     def forward(self, outputs):
         z1, z2, prototype = outputs["aug1_embed"], outputs["aug2_embed"], outputs["prototype"]
         assert len(z1) == len(z2)
-        n_emb = len(z1)            
+        n_emb = len(z1)
+
+        if self.reconstruction == 'cosine' or self.regularization == 'neg-samples' or self.regularization == 'sem-aware':
+            z1 = [func.normalize(z, p=2, dim=-1) for z in z1]
+            z2 = [func.normalize(z, p=2, dim=-1) for z in z2]
         
         Z = all_gather_batch_with_grad(z1 + z2)
         z1_all, z2_all = Z[:n_emb], Z[n_emb:]
