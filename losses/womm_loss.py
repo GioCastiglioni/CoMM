@@ -223,6 +223,12 @@ class WoMMLoss(nn.Module):
                 loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)
             else:
                 loss_reg = torch.mean(torch.stack(loss_reg_local))
+        elif self.regularization == 'neg-samples-multi':
+            tgt1 = z2_all[prototype].detach() if self.stop_grad else z2_all[prototype]
+            tgt2 = z1_all[prototype].detach() if self.stop_grad else z1_all[prototype]
+            reg1 = self.calc_neg_samples_reg(z1_all[prototype], tgt1)
+            reg2 = self.calc_neg_samples_reg(z2_all[prototype], tgt2)
+            loss_reg = (reg1 + reg2) / 2.0
         else:
             loss_reg = torch.tensor(0.0, device=z1_all[0].device)
             
