@@ -1,0 +1,56 @@
+seed: 42
+mode: "train"
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: "auto"
+  strategy: "auto"
+  devices: "auto"
+  num_nodes: 1
+  max_epochs: 100
+  default_root_dir: "."
+  use_distributed_sampler: false
+  deterministic: false
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 1
+  inference_mode: false 
+  precision: "bf16-mixed"
+
+optim:
+  lr: 3e-4
+  weight_decay: 1e-4
+  lr_scheduler:
+    warmup_epochs: 5
+    start_warmup_value: 1e-8
+    final_value: 1e-8
+
+model:
+  encoders:
+    - _target_: models.video_resnet.VideoResNetEncoder
+      output_dim: 512
+      pretrained: true
+    - _target_: models.wav2vec.Wav2Vec2Encoder
+      output_dim: 512
+      pretrained: true
+
+  visual_projection:
+    _target_: pl_modules.simclr.Siamese._build_mlp
+    in_dim: 512
+    mlp_dim: 1024
+    out_dim: 256
+
+  clip_image_projection:
+    _target_: torch.nn.Linear
+    in_features: 512
+    out_features: 512
+    bias: False
+
+  clip_text_projection:
+    _target_: torch.nn.Linear
+    in_features: 512
+    out_features: 512
+    bias: False
+
+  adapters:
+    - null
+    - null
