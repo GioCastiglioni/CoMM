@@ -94,6 +94,8 @@ class WoMM(BaseModel):
             with torch.inference_mode():
                 # compute output
                 output = self.encoder(X_, **kwargs)
+                if isinstance(output, list):
+                    output = output[0]
                 X.extend(output.view(len(output), -1).detach().cpu())
                 y.extend(y_.detach().cpu())
         torch.cuda.empty_cache()
