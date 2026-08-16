@@ -28,8 +28,9 @@ model:
   encoders:
     - _target_: models.video_resnet.VideoResNetEncoder
       pretrained: true
-    - _target_: models.wav2vec.Wav2Vec2Encoder
-      pretrained: true
+    - _target_: models.alexnet.AlexNetEncoder
+      in_channels: 1
+      global_pool: ""
 
   visual_projection:
     _target_: pl_modules.simclr.Siamese._build_mlp
@@ -50,9 +51,15 @@ model:
     bias: False
 
   adapters:
-    - _target_: torch.nn.Linear
-      in_features: 512
-      out_features: ${model.model.encoder.embed_dim}
-    - _target_: torch.nn.Linear
-      in_features: 768
-      out_features: ${model.model.encoder.embed_dim}
+    - _target_: models.input_adapters.PatchedInputAdapter
+      num_channels: 512
+      stride_level: 1
+      patch_size_full: 1
+      dim_tokens: ${model.model.encoder.embed_dim}
+      image_size: 7
+    - _target_: models.input_adapters.PatchedInputAdapter
+      num_channels: 256
+      stride_level: 1
+      patch_size_full: 1
+      dim_tokens: ${model.model.encoder.embed_dim}
+      image_size: 6
