@@ -62,7 +62,8 @@ def main(cfg: DictConfig):
     callbacks = [LinearProbingCallback([d_mod],
                                        names=[name],
                                        val_loaders=False,
-                                       mask_modalities=mask)
+                                       mask_modalities=mask,
+                                       always_prefix=True)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
     # Trainer + fit

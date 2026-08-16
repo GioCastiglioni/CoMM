@@ -35,6 +35,7 @@ class LinearProbingCallback(Callback):
                  fastsearch: bool = False,
                  frequency: str = "by_epoch",
                  logging_level: str = "INFO",
+                 always_prefix: bool = False,
                  **extraction_kwargs):
         """
         :param downstream_data_modules: List of dataset to evaluate
@@ -57,6 +58,7 @@ class LinearProbingCallback(Callback):
         self.use_sklearn = use_sklearn
         self.fastsearch = fastsearch
         self.frequency = frequency
+        self.always_prefix = always_prefix
         if self.multilabel and not self.use_sklearn:
             raise NotImplementedError("`multilabel` linear probing not implemented with PyTorch.")
         self.logging_level = logging_level
@@ -92,7 +94,7 @@ class LinearProbingCallback(Callback):
                       .format(d=dataset, scores="  ".join(map(lambda k: "%s=%.3f"%(k, scores_[k]), scores_))))
 
             for k, v in list(scores.items()):
-                if len(self.names) > 1:
+                if len(self.names) > 1 or getattr(self, "always_prefix", False):
                     for i, dataset in enumerate(self.names):
                         scores["%s_%s"%(k, dataset)] = scores[k][i]
                 scores[k] = np.mean(scores[k])
