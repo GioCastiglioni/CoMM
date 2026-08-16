@@ -19,9 +19,9 @@ model:
     out_dim: 256 # Output embed dim of MLP projection head
 
   loss_kwargs:
-    reconstruction: "mse"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
-    regularization: "sigreg"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware'
-    reg_weight: 0.05
+    reconstruction: "cosine"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
+    regularization: "neg-samples"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware' 'neg-samples-multi'
+    reg_weight: 0.5
     temperature: 0.1
     sigma_max: 2.0
     sigma_min: 0.5
