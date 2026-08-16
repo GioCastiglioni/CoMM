@@ -26,11 +26,16 @@ class CREMADDataModule(LightningDataModule):
         # Base Video transform: R3D_18 default transform
         self.video_transform = R3D_18_Weights.KINETICS400_V1.transforms()
 
-        self.audio_transform = None
-        self.audio_augment = torch.nn.Sequential(
+        self.audio_transform = transforms.Compose([
+            torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_mels=128, n_fft=1024, hop_length=512),
+            torchaudio.transforms.AmplitudeToDB(),
+            transforms.Resize((224, 224), antialias=True)
+        ])
+        self.audio_augment = transforms.Compose([
+            transforms.RandomResizedCrop(224, scale=(0.8, 1.0), antialias=True),
             torchaudio.transforms.FrequencyMasking(freq_mask_param=15),
             torchaudio.transforms.TimeMasking(time_mask_param=35)
-        )
+        ])
 
         self.video_augment = transforms.Compose([
             transforms.RandomResizedCrop(112, scale=(0.5, 1.0), antialias=True),
@@ -168,13 +173,12 @@ class CREMADDatasetMMSSL(CREMADDatasetBase):
             video_aug1 = video
             video_aug2 = video
 
+        if self.audio_transform is not None:
+            audio = self.audio_transform(audio)
+
         if self.audio_augment is not None:
-            # Masking requires a spectrogram usually, but we can do it on the wave or use a simple transform.
-            # To avoid issues, let's just add noise as an augmentation.
-            noise1 = torch.randn_like(audio) * 0.01
-            noise2 = torch.randn_like(audio) * 0.01
-            audio_aug1 = audio + noise1
-            audio_aug2 = audio + noise2
+            audio_aug1 = self.audio_augment(audio)
+            audio_aug2 = self.audio_augment(audio)
         else:
             audio_aug1 = audio
             audio_aug2 = audio
