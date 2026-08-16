@@ -1,19 +1,23 @@
 import torch
 import torch.nn as nn
 from torchvision.models.video import r3d_18, R3D_18_Weights
+from torchvision.models.feature_extraction import create_feature_extractor
 
 class VideoResNetEncoder(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self, pretrained=True, return_nodes=None):
         super().__init__()
         weights = R3D_18_Weights.KINETICS400_V1 if pretrained else None
         model = r3d_18(weights=weights)
         
-        # Remove the fully connected classification head
-        self.feature_extractor = nn.Sequential(*list(model.children())[:-1])
+        if return_nodes is None:
+            return_nodes = {'layer4': 'features'}
+            
+        self.feature_extractor = create_feature_extractor(model, return_nodes=return_nodes)
 
     def forward(self, x):
         # x: (B, C, T, H, W)
-        features = self.feature_extractor(x) # (B, 512, 1, 1, 1) usually if pooled
-        features = features.flatten(1) # (B, 512)
+        features = self.feature_extractor(x)['features'] # (B, 512, 2, 7, 7)
+        # Average over the temporal dimension
+        features = features.mean(dim=2) # (B, 512, 7, 7)
 
-        return features.unsqueeze(1)    # (B, 1, 512)
+        return features
