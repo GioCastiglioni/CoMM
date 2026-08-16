@@ -27,10 +27,8 @@ optim:
 model:
   encoders:
     - _target_: models.video_resnet.VideoResNetEncoder
-      output_dim: 512
       pretrained: true
     - _target_: models.wav2vec.Wav2Vec2Encoder
-      output_dim: 512
       pretrained: true
 
   visual_projection:
@@ -52,5 +50,9 @@ model:
     bias: False
 
   adapters:
-    - null
-    - null
+    - _target_: torch.nn.Linear
+      in_features: 512
+      out_features: ${model.model.encoder.embed_dim}
+    - _target_: torch.nn.Linear
+      in_features: 768
+      out_features: ${model.model.encoder.embed_dim}
