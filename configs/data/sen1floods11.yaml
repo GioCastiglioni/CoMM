@@ -1,0 +1,7 @@
+name: "sen1floods11"
+
+data_module:
+  _target_: dataset.sen1floods11.Sen1Floods11DataModule
+  batch_size: 4
+  num_workers: 4
+  seed: 42
