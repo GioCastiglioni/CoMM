@@ -129,10 +129,11 @@ class FusionTransformer(nn.Module):
             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
 
-    def forward(self, x: List[torch.Tensor], key_padding_mask: List[torch.Tensor] = None):
+    def forward(self, x: List[torch.Tensor], key_padding_mask: List[torch.Tensor] = None, return_tokens: bool = False):
         """
         :param x: input tensors
         :param key_padding_mask: torch mask of type bool. `True` indicates unattended tokens.
+        :param return_tokens: if True, returns the unpooled sequence of tokens.
         :return:
         """
         # Concatenate over tokens + self-attention
@@ -155,10 +156,17 @@ class FusionTransformer(nn.Module):
 
             x = self.norm(x)
 
+            if return_tokens:
+                if self.pool == "cls":
+                    return x[:, 1:] if self.token_dim == 1 else x[1:]
+                return x
+
             if self.pool == "cls":
                 x = x[:, 0] if self.token_dim == 1 else x[0]
-            else:
+            elif self.pool == "mean":
                 x = x.mean(dim=self.token_dim)
+            elif self.pool == "none":
+                pass # do not pool
             return x
         # Cross-attention + concatenate over tokens
         elif self.fusion == "x-attn":
@@ -207,7 +215,7 @@ class MMFusion(nn.Module):
         """
         super().__init__()
         assert len(encoders) == len(input_adapters), "Each encoder must have an adapter."
-        assert pool in {'cls', 'mean'}, "pool type must be either cls (cls token) or mean (mean pooling)"
+        assert pool in {'cls', 'mean', 'none'}, "pool type must be either cls (cls token), mean (mean pooling), or none (no pooling)"
         self.input_adapters = nn.ModuleList(input_adapters)
         self.encoders = nn.ModuleList(encoders)
         self.pool = pool
@@ -217,13 +225,15 @@ class MMFusion(nn.Module):
                                                     batch_first=True)
 
     def forward(self, x: List[torch.Tensor],
-                mask_modalities: Optional[Union[List[bool], List[List[bool]]]] = None):
+                mask_modalities: Optional[Union[List[bool], List[List[bool]]]] = None,
+                return_tokens: bool = False):
         """
         :param x: List of tensors
         :param mask_modalities: Mask indicating which modalities are given.
             By default, `x` should have all modalities.
             If a list of lists is given, assume `x` has all modalities and computes
             a list of output by masking out modalitites according to `mask_modalities`.
+        :param return_tokens: if True, return the unpooled sequence of tokens.
         :return: a latent vector z or list of vector if `mask_modalities` is a list of list.
         """
         list_mask_mod = None
@@ -262,15 +272,15 @@ class MMFusion(nn.Module):
                      for (attn_mask_, zi) in zip(attn_mask, latent_tokens)]
         if list_mask_mod is None:
             # 3. FusionTransformer forward pass
-            z = self.fusion_transformer(latent_tokens, key_padding_mask=attn_mask)
+            z = self.fusion_transformer(latent_tokens, key_padding_mask=attn_mask, return_tokens=return_tokens)
         else:
             # 3.bis Drop modalities according to `mask_modalities`
             z = []
             for mask_mod in list_mask_mod:
-                latent_tokens_ = [z for (z, m) in zip(latent_tokens, mask_mod) if m]
+                latent_tokens_ = [zt for (zt, m) in zip(latent_tokens, mask_mod) if m]
                 attn_mask_ = [attn for (attn, m) in zip(attn_mask, mask_mod) if m]
                 # 3. FusionTransformer forward pass
-                z.append(self.fusion_transformer(latent_tokens_))
+                z.append(self.fusion_transformer(latent_tokens_, return_tokens=return_tokens))
         return z
 
     def encode_single_mod(self, x: torch.Tensor, mod: int):
