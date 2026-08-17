@@ -7,6 +7,7 @@ from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 import torchvision.io
 import torchaudio
+from utils import make_dirs, GaussianBlur
 
 class CREMADDataModule(LightningDataModule):
     def __init__(self, model: str,
@@ -37,10 +38,19 @@ class CREMADDataModule(LightningDataModule):
             torchaudio.transforms.TimeMasking(time_mask_param=35)
         ])
 
+        normalize = transforms.Normalize(mean=[0.43216, 0.394666, 0.37645],
+                                         std=[0.22803, 0.22145, 0.216989])
+
         self.video_augment = transforms.Compose([
-            transforms.RandomResizedCrop(112, scale=(0.5, 1.0), antialias=True),
+            transforms.RandomResizedCrop(112, scale=(0.08, 1.), antialias=True),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomHorizontalFlip(),
-            transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989])
+            transforms.ToTensor(),
+            normalize,
         ])
 
         self.setup()
