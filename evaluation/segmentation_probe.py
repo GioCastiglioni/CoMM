@@ -26,7 +26,7 @@ class SimpleSegmentationDecoder(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
             
-            nn.Conv2d(32, num_classes, kernel_size=3, padding=1)
+            nn.Conv2d(32, num_classes, kernel_size=1, padding=0)
         )
     
     def forward(self, x, target_size):
