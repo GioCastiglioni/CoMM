@@ -118,8 +118,10 @@ class SegmentationProbingCallback(Callback):
                 
                 # Validation Loop
                 decoder.eval()
-                intersection, union, target_area = 0, 0, 0
-                correct, total = 0, 0
+                intersections = torch.zeros(self.num_classes, device=device)
+                unions = torch.zeros(self.num_classes, device=device)
+                class_corrects = torch.zeros(self.num_classes, device=device)
+                class_totals = torch.zeros(self.num_classes, device=device)
                 
                 with torch.no_grad():
                     for X_batch, y_batch in val_loader:
@@ -145,18 +147,29 @@ class SegmentationProbingCallback(Callback):
                         pred_labels = pred_labels[valid_mask]
                         y_batch_valid = y_batch[valid_mask]
                         
-                        correct += (pred_labels == y_batch_valid).sum().item()
-                        total += valid_mask.sum().item()
-                        
-                        # mIoU computation for class 1 (Water)
-                        pred_water = (pred_labels == 1)
-                        target_water = (y_batch_valid == 1)
-                        
-                        intersection += (pred_water & target_water).sum().item()
-                        union += (pred_water | target_water).sum().item()
+                        for c in range(self.num_classes):
+                            pred_c = (pred_labels == c)
+                            target_c = (y_batch_valid == c)
+                            
+                            intersections[c] += (pred_c & target_c).sum()
+                            unions[c] += (pred_c | target_c).sum()
+                            class_corrects[c] += (pred_c & target_c).sum()
+                            class_totals[c] += target_c.sum()
                 
-                acc = correct / total if total > 0 else 0
-                iou = intersection / union if union > 0 else 0
-                print(f"Segmentation Probe ({dataset_name}) - Acc: {acc:.4f}, IoU (Water): {iou:.4f}")
+                ious = intersections / unions.clamp(min=1)
+                accs = class_corrects / class_totals.clamp(min=1)
+                
+                valid_classes = (class_totals > 0)
+                mIoU = ious[valid_classes].mean().item() if valid_classes.any() else 0.0
+                mAcc = accs[valid_classes].mean().item() if valid_classes.any() else 0.0
+                
+                global_correct = class_corrects.sum().item()
+                global_total = class_totals.sum().item()
+                global_acc = global_correct / global_total if global_total > 0 else 0
+                
+                print(f"Segmentation Probe ({dataset_name}) - Global Acc: {global_acc:.4f}, mAcc: {mAcc:.4f}, mIoU: {mIoU:.4f}")
+                pl_module.log(f"Probe/{dataset_name}_GlobalAcc", global_acc, sync_dist=True)
+                pl_module.log(f"Probe/{dataset_name}_mAcc", mAcc, sync_dist=True)
+                pl_module.log(f"Probe/{dataset_name}_mIoU", mIoU, sync_dist=True)
             
             pl_module.train()
