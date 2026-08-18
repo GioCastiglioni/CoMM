@@ -110,12 +110,14 @@ class TextMasking(torch.nn.Module):
 class GaussianBlur(object):
     """Gaussian blur augmentation in SimCLR https://arxiv.org/abs/2002.05709"""
 
-    def __init__(self, sigma=[.1, 2.]):
+    def __init__(self, sigma=[.1, 2.], kernel_size=21):
         self.sigma = sigma
+        self.kernel_size = kernel_size
 
     def __call__(self, x):
         sigma = random.uniform(self.sigma[0], self.sigma[1])
-        x = x.filter(ImageFilter.GaussianBlur(radius=sigma))
+        import torchvision.transforms.functional as F
+        x = F.gaussian_blur(x, [self.kernel_size, self.kernel_size], [sigma, sigma])
         return x
 
 
