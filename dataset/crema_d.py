@@ -24,8 +24,14 @@ class CREMADDataModule(LightningDataModule):
             self.catalog = json.load(f)
         self.root = self.catalog["crema_d"]["path"]
 
-        # Base Video transform: R3D_18 default transform
-        self.video_transform = R3D_18_Weights.KINETICS400_V1.transforms()
+        normalize = transforms.Normalize(mean=[0.43216, 0.394666, 0.37645],
+                                         std=[0.22803, 0.22145, 0.216989])
+
+        self.video_transform = transforms.Compose([
+            transforms.ConvertImageDtype(torch.float32),
+            transforms.Resize((224, 224), antialias=True),
+            normalize
+        ])
 
         self.audio_transform = transforms.Compose([
             torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_mels=128, n_fft=1024, hop_length=512),
@@ -38,11 +44,9 @@ class CREMADDataModule(LightningDataModule):
             torchaudio.transforms.TimeMasking(time_mask_param=35)
         ])
 
-        normalize = transforms.Normalize(mean=[0.43216, 0.394666, 0.37645],
-                                         std=[0.22803, 0.22145, 0.216989])
-
         self.video_augment = transforms.Compose([
-            transforms.RandomResizedCrop(112, scale=(0.8, 1.), antialias=True),
+            transforms.ConvertImageDtype(torch.float32),
+            transforms.RandomResizedCrop(224, scale=(0.75, 1.), antialias=True),
             transforms.RandomApply([
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
@@ -110,8 +114,6 @@ class CREMADDatasetBase(Dataset):
 
     def _sample_frames(self, video_tensor):
         T = video_tensor.shape[0]
-        if T == 0:
-            return torch.zeros((self.num_frames, 3, 112, 112)) # dummy
         indices = torch.linspace(0, T - 1, self.num_frames).long()
         sampled = video_tensor[indices]
         # To (T, C, H, W)
@@ -136,6 +138,7 @@ class CREMADDatasetBase(Dataset):
             waveform = torch.nn.functional.pad(waveform, (0, padding))
         
         # Video
+        torchvision.set_video_backend('video_reader')
         video_tensor, audio, info = torchvision.io.read_video(sample["video_path"], pts_unit="sec")
         sampled_video = self._sample_frames(video_tensor)
 
@@ -151,7 +154,9 @@ class CREMADDatasetSup(CREMADDatasetBase):
     def __getitem__(self, idx):
         video, audio, label = self.get_raw_item(idx)
         if self.video_transform is not None:
-            video = self.video_transform(video)
+            video = self.video_transform(video).permute(1, 0, 2, 3)
+        else:
+            video = video.permute(1, 0, 2, 3)
         if self.audio_transform is not None:
             audio = self.audio_transform(audio)
             
@@ -176,11 +181,11 @@ class CREMADDatasetMMSSL(CREMADDatasetBase):
             video_aug1 = self.video_augment(video).permute(1, 0, 2, 3) # (C, T, H, W)
             video_aug2 = self.video_augment(video).permute(1, 0, 2, 3)
         elif self.video_transform is not None:
-            video_aug1 = self.video_transform(video)
-            video_aug2 = self.video_transform(video)
+            video_aug1 = self.video_transform(video).permute(1, 0, 2, 3)
+            video_aug2 = self.video_transform(video).permute(1, 0, 2, 3)
         else:
-            video_aug1 = video
-            video_aug2 = video
+            video_aug1 = video.permute(1, 0, 2, 3)
+            video_aug2 = video.permute(1, 0, 2, 3)
 
         if self.audio_transform is not None:
             audio = self.audio_transform(audio)
