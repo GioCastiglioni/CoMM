@@ -24,8 +24,8 @@ class CREMADDataModule(LightningDataModule):
             self.catalog = json.load(f)
         self.root = self.catalog["crema_d"]["path"]
 
-        normalize = transforms.Normalize(mean=[0.43216, 0.394666, 0.37645],
-                                         std=[0.22803, 0.22145, 0.216989])
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
 
         self.video_transform = transforms.Compose([
             transforms.ConvertImageDtype(torch.float32),
@@ -36,22 +36,24 @@ class CREMADDataModule(LightningDataModule):
         self.audio_transform = transforms.Compose([
             torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_mels=128, n_fft=1024, hop_length=512),
             torchaudio.transforms.AmplitudeToDB(),
-            transforms.Resize((224, 224), antialias=True)
+            transforms.Resize((224, 224), antialias=True),
+            # Instance Normalization (Media 0, Std 1 por espectrograma)
+            transforms.Lambda(lambda x: (x - x.mean()) / (x.std() + 1e-6))
         ])
         self.audio_augment = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=(0.8, 1.0), antialias=True),
-            torchaudio.transforms.FrequencyMasking(freq_mask_param=15),
+            transforms.RandomResizedCrop(224, scale=(0.5, 1.0), antialias=True),
+            torchaudio.transforms.FrequencyMasking(freq_mask_param=35),
             torchaudio.transforms.TimeMasking(time_mask_param=35)
         ])
 
         self.video_augment = transforms.Compose([
             transforms.ConvertImageDtype(torch.float32),
-            transforms.RandomResizedCrop(224, scale=(0.75, 1.), antialias=True),
+            transforms.RandomResizedCrop(224, scale=(0.5, 1.), antialias=True),
             transforms.RandomApply([
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.5),
+            transforms.RandomGrayscale(p=0.5),
+            #transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomHorizontalFlip(),
             normalize,
         ])
