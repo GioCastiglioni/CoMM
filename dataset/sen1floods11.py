@@ -31,7 +31,7 @@ class Sen1Floods11DataModule(LightningDataModule):
         self.s2_normalize = v2.Normalize(mean=s2_mean, std=s2_std)
         
         self.spatial_augment = v2.Compose([
-            v2.RandomResizedCrop(224, scale=(0.2, 1.0), antialias=True),
+            v2.RandomResizedCrop(224, scale=(0.5, 1.0), antialias=True),
             v2.RandomHorizontalFlip(),
             v2.RandomVerticalFlip()
         ])
@@ -136,10 +136,16 @@ class Sen1Floods11DatasetSup(Sen1Floods11DatasetBase):
         
         # 1. Spatial Transforms (applied to all)
         if self.spatial_transform is not None:
-            c1, c2, c3 = s1.shape[0], s2.shape[0], target.shape[0]
-            stacked = torch.cat([s1, s2, target], dim=0)
-            aug1 = self.spatial_transform(stacked)
-            s1_aug1, s2_aug1, t_aug1 = torch.split(aug1, [c1, c2, c3], dim=0)
+            from torchvision import tv_tensors
+            s1_tv = tv_tensors.Image(s1)
+            s2_tv = tv_tensors.Image(s2)
+            target_tv = tv_tensors.Mask(target)
+            
+            s1_aug1, s2_aug1, t_aug1 = self.spatial_transform(s1_tv, s2_tv, target_tv)
+            
+            s1_aug1 = s1_aug1.as_subclass(torch.Tensor)
+            s2_aug1 = s2_aug1.as_subclass(torch.Tensor)
+            t_aug1 = t_aug1.as_subclass(torch.Tensor)
         else:
             s1_aug1, s2_aug1, t_aug1 = s1, s2, target
             
@@ -169,14 +175,18 @@ class Sen1Floods11DatasetMMSSL(Sen1Floods11DatasetBase):
         
         # 1. Spatial Transforms (applied to all)
         if self.spatial_transform is not None:
-            c1, c2, c3 = s1.shape[0], s2.shape[0], target.shape[0]
-            stacked = torch.cat([s1, s2, target], dim=0)
+            from torchvision import tv_tensors
+            s1_tv = tv_tensors.Image(s1)
+            s2_tv = tv_tensors.Image(s2)
+            target_tv = tv_tensors.Mask(target)
             
-            aug1 = self.spatial_transform(stacked)
-            aug2 = self.spatial_transform(stacked)
+            s1_aug1, s2_aug1, _ = self.spatial_transform(s1_tv, s2_tv, target_tv)
+            s1_aug2, s2_aug2, _ = self.spatial_transform(s1_tv, s2_tv, target_tv)
             
-            s1_aug1, s2_aug1, _ = torch.split(aug1, [c1, c2, c3], dim=0)
-            s1_aug2, s2_aug2, _ = torch.split(aug2, [c1, c2, c3], dim=0)
+            s1_aug1 = s1_aug1.as_subclass(torch.Tensor)
+            s2_aug1 = s2_aug1.as_subclass(torch.Tensor)
+            s1_aug2 = s1_aug2.as_subclass(torch.Tensor)
+            s2_aug2 = s2_aug2.as_subclass(torch.Tensor)
         else:
             s1_aug1 = s1_aug2 = s1
             s2_aug1 = s2_aug2 = s2
