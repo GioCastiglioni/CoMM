@@ -11,6 +11,10 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.linear_probe import LinearProbingCallback
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
+warnings.filterwarnings("ignore", message=".*meshgrid.*")
 
 
 @hydra.main(version_base=None, config_name="train_crema_d", config_path="./configs")

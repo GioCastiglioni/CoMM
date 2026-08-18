@@ -15,9 +15,10 @@ class VideoResNetEncoder(nn.Module):
         self.feature_extractor = create_feature_extractor(model, return_nodes=return_nodes)
 
     def forward(self, x):
-        # x: (B, C, T, H, W)
         features = self.feature_extractor(x)['features'] # (B, 512, 2, 7, 7)
-        # Average over the temporal dimension
-        features = features.mean(dim=2) # (B, 512, 7, 7)
+
+        B, D, T, H, W = features.shape
+        
+        features = features.reshape(B, D*T, H, W) # (B, 1024, 7, 7)
 
         return features

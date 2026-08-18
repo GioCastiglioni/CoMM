@@ -52,7 +52,7 @@ model:
 
   adapters:
     - _target_: models.input_adapters.PatchedInputAdapter
-      num_channels: 512
+      num_channels: 1024
       stride_level: 1
       patch_size_full: 1
       dim_tokens: ${model.model.encoder.embed_dim}
