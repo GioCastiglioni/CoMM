@@ -33,6 +33,9 @@ model:
     vicreg_cov_coeff: 1.0
     use_geco: False
     geco_warmup_epochs: 15
-    geco_tolerance_margin: 0.8
+    geco_tolerance_margin: 0.9
     geco_alpha: 0.99
-    geco_lr: 0.01
+    geco_clamp_min: 0.9
+    geco_clamp_max: 1.1
+    geco_updates_per_epoch: 10
+    steps_per_epoch: 0      # Automatically set in main

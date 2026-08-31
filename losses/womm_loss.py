@@ -28,9 +28,12 @@ class WoMMLoss(nn.Module):
         vicreg_cov_coeff=1.0,
         use_geco=False,
         geco_warmup_epochs=15,    
-        geco_tolerance_margin=1.1, 
-        geco_alpha=0.99,
-        geco_lr=0.01
+        geco_tolerance_margin=0.9, 
+        geco_alpha=0.99,            
+        geco_clamp_min=0.9,        
+        geco_clamp_max=1.1,
+        steps_per_epoch=3,
+        geco_updates_per_epoch=10
     ):
         super().__init__()
         self.weights = weights
@@ -53,9 +56,12 @@ class WoMMLoss(nn.Module):
         self.geco_warmup_epochs = geco_warmup_epochs
         self.geco_tolerance_margin = geco_tolerance_margin
         self.geco_alpha = geco_alpha
-        self.geco_lr = geco_lr
+        self.geco_clamp_min = geco_clamp_min
+        self.geco_clamp_max = geco_clamp_max
+        self.lbd_step = max(1, steps_per_epoch // geco_updates_per_epoch)
 
         self.register_buffer('current_epoch', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('global_step', torch.tensor(0, dtype=torch.long))
         self.register_buffer('lagrange_lambda', torch.tensor(reg_weight, dtype=torch.float32))
         self.register_buffer('constraint_ma', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('loss_reg_ema', torch.tensor(0.0, dtype=torch.float32))
@@ -277,9 +283,16 @@ class WoMMLoss(nn.Module):
                         self.constraint_ma.mul_(self.geco_alpha).add_(C_raw, alpha=1.0 - self.geco_alpha)
                     
                     if self.training:
-                        # lambda^t = lambda^{t-1} * exp(lr * C_{ma})
-                        lambda_update = torch.exp(self.geco_lr * self.constraint_ma)
-                        self.lagrange_lambda.mul_(lambda_update)
+                        if self.global_step % self.lbd_step == 0:
+                            # Original GECO exponential clamp logic
+                            lambda_update = torch.clamp(
+                                torch.exp(self.constraint_ma), 
+                                min=self.geco_clamp_min, 
+                                max=self.geco_clamp_max
+                            )
+                            self.lagrange_lambda.mul_(lambda_update)
+                        
+                        self.global_step.add_(1)
 
                 total_loss = total_sim_loss + self.lagrange_lambda.detach() * loss_reg
                 lambda_out = self.lagrange_lambda.item()

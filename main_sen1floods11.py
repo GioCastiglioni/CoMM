@@ -1,4 +1,4 @@
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 import hydra
 from hydra.utils import instantiate
 import numpy as np
@@ -22,7 +22,32 @@ def main(cfg: DictConfig):
     # fix the seed for repro
     pl.seed_everything(cfg.seed, workers=True)
 
-    # create model + save hyper-parameters
+    data_module = instantiate(cfg.data.data_module, model=cfg.model.name)
+    data_module.setup(stage="fit")
+    
+    base_steps = len(data_module.train_dataloader())
+    
+    raw_devices = cfg.trainer.get("devices", 1)
+    if isinstance(raw_devices, (list, tuple)):
+        num_devices = len(raw_devices)
+    elif isinstance(raw_devices, str):
+        if raw_devices.lower() == "auto":
+            num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        elif "," in raw_devices:
+            num_devices = len([d for d in raw_devices.split(",") if d.strip()])
+        else:
+            num_devices = int(raw_devices)
+    else:
+        num_devices = int(raw_devices)
+        
+    num_nodes = int(cfg.trainer.get("num_nodes", 1))
+    
+    calculated_steps_per_epoch = max(1, base_steps // (num_devices * num_nodes))
+    print(f"Auto-calculated steps_per_epoch: {calculated_steps_per_epoch} (Base: {base_steps}, Devices: {num_devices}, Nodes: {num_nodes})")
+
+    with open_dict(cfg):
+        if "loss_kwargs" in cfg.model.model:
+            cfg.model.model.loss_kwargs.steps_per_epoch = calculated_steps_per_epoch
     kwargs = dict()
 
     if cfg.model.name== "CoMM" or cfg.model.name== "WoMM":
@@ -46,10 +71,6 @@ def main(cfg: DictConfig):
     model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
     model.save_hyperparameters(cfg)
 
-    # Data loading code
-    data_module = instantiate(cfg.data.data_module, model=cfg.model.name)
-
-    # Segmentation probing on each task: S1-Only, S2-Only, S1+S2
     downstream_names = ["s1_s2", "s1_only", "s2_only"]
     mask_modalities_list = [
         [[True, True]],   # S1 + S2
