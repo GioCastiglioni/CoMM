@@ -41,6 +41,7 @@ class SegmentationProbingCallback(Callback):
                  lr: float = 1e-3,
                  num_classes: int = 2,
                  ignore_index: int = -1,
+                 every_n_epochs: int = 5,
                  **extraction_kwargs):
         self.downstream_data_modules = downstream_data_modules
         self.names = names
@@ -48,12 +49,15 @@ class SegmentationProbingCallback(Callback):
         self.lr = lr
         self.num_classes = num_classes
         self.ignore_index = ignore_index
+        self.every_n_epochs = every_n_epochs
         self.extraction_kwargs = extraction_kwargs
         if self.names is None:
             self.names = [d.__class__.__name__ for d in downstream_data_modules]
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
-        self.segmentation_probing(trainer, pl_module)
+        # We check modulo against current_epoch + 1, since epochs are 0-indexed
+        if (trainer.current_epoch + 1) % self.every_n_epochs == 0:
+            self.segmentation_probing(trainer, pl_module)
             
     def segmentation_probing(self, trainer: Trainer, pl_module: LightningModule):
         if trainer.global_rank == 0:

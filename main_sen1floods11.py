@@ -62,7 +62,8 @@ def main(cfg: DictConfig):
                                
     callbacks = [SegmentationProbingCallback([d_mod],
                                        names=[name],
-                                       mask_modalities=mask)
+                                       mask_modalities=mask,
+                                       every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
     checkpoint_callback = ModelCheckpoint(
