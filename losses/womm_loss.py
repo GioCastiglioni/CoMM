@@ -250,6 +250,7 @@ class WoMMLoss(nn.Module):
             
         if self.use_geco:
             if self.current_epoch < self.geco_warmup_epochs:
+                # EMA is only kept for monitoring purposes during warmup, not for kappa initialization
                 with torch.no_grad():
                     if self.loss_reg_ema == 0.0:
                         self.loss_reg_ema.copy_(loss_reg.detach())
@@ -261,14 +262,22 @@ class WoMMLoss(nn.Module):
             else:
                 with torch.no_grad():
                     if not self.geco_initialized:
-                        self.geco_kappa_auto.copy_(self.loss_reg_ema * self.geco_tolerance_margin)
-                        self.constraint_ma.copy_(loss_reg.detach() - self.geco_kappa_auto)
+                        # Use instantaneous loss to avoid EMA lag
+                        current_reg = loss_reg.detach()
+                        
+                        # Absolute value correction for margin consistency
+                        margin_diff = self.geco_tolerance_margin - 1.0
+                        kappa = current_reg + torch.abs(current_reg) * margin_diff
+                        
+                        self.geco_kappa_auto.copy_(kappa)
+                        self.constraint_ma.copy_(current_reg - self.geco_kappa_auto)
                         self.geco_initialized.fill_(True)
                     else:
                         C_raw = loss_reg.detach() - self.geco_kappa_auto
                         self.constraint_ma.mul_(self.geco_alpha).add_(C_raw, alpha=1.0 - self.geco_alpha)
                     
                     if self.training:
+                        # lambda^t = lambda^{t-1} * exp(lr * C_{ma})
                         lambda_update = torch.exp(self.geco_lr * self.constraint_ma)
                         self.lagrange_lambda.mul_(lambda_update)
 
