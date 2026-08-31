@@ -50,6 +50,7 @@ class SegmentationProbingCallback(Callback):
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.every_n_epochs = every_n_epochs
+        self.last_metrics = {}
         self.extraction_kwargs = extraction_kwargs
         if self.names is None:
             self.names = [d.__class__.__name__ for d in downstream_data_modules]
@@ -58,6 +59,11 @@ class SegmentationProbingCallback(Callback):
         # We check modulo against current_epoch + 1, since epochs are 0-indexed
         if (trainer.current_epoch + 1) % self.every_n_epochs == 0:
             self.segmentation_probing(trainer, pl_module)
+        else:
+            for dataset_name in self.names:
+                pl_module.log(f"Probe/{dataset_name}_GlobalAcc", self.last_metrics.get(f"Probe/{dataset_name}_GlobalAcc", 0.0), sync_dist=True)
+                pl_module.log(f"Probe/{dataset_name}_mAcc", self.last_metrics.get(f"Probe/{dataset_name}_mAcc", 0.0), sync_dist=True)
+                pl_module.log(f"Probe/{dataset_name}_mIoU", self.last_metrics.get(f"Probe/{dataset_name}_mIoU", 0.0), sync_dist=True)
             
     def segmentation_probing(self, trainer: Trainer, pl_module: LightningModule):
         if trainer.global_rank == 0:
@@ -175,5 +181,8 @@ class SegmentationProbingCallback(Callback):
                 pl_module.log(f"Probe/{dataset_name}_GlobalAcc", global_acc, sync_dist=True)
                 pl_module.log(f"Probe/{dataset_name}_mAcc", mAcc, sync_dist=True)
                 pl_module.log(f"Probe/{dataset_name}_mIoU", mIoU, sync_dist=True)
+                self.last_metrics[f"Probe/{dataset_name}_GlobalAcc"] = global_acc
+                self.last_metrics[f"Probe/{dataset_name}_mAcc"] = mAcc
+                self.last_metrics[f"Probe/{dataset_name}_mIoU"] = mIoU
             
             pl_module.train()
