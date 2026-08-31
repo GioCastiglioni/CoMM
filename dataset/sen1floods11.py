@@ -66,8 +66,8 @@ class Sen1Floods11DataModule(LightningDataModule):
                                                           s1_normalize=self.s1_normalize, 
                                                           s2_normalize=self.s2_normalize)
             self.val_dataset = Sen1Floods11DatasetMMSSL(self.root, split="test", 
-                                                        spatial_transform=self.spatial_transform, 
-                                                        pixel_transform=None,
+                                                        spatial_transform=self.spatial_augment, 
+                                                        pixel_transform=self.pixel_augment,
                                                         s1_normalize=self.s1_normalize, 
                                                         s2_normalize=self.s2_normalize)
         else:
