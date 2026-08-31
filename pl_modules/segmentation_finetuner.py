@@ -120,6 +120,45 @@ class SegmentationFineTuner(pl.LightningModule):
         
         return val_loss
 
+    def test_step(self, batch, batch_idx):
+        X_batch, y_batch = batch
+        preds = self.forward(X_batch, y_batch.shape[-2:])
+        val_loss = self.criterion(preds, y_batch)
+        self.log('test/loss', val_loss, sync_dist=True)
+        
+        # Calculate metrics
+        pred_labels = preds.argmax(dim=1)
+        valid_mask = (y_batch != self.ignore_index)
+        pred_labels = pred_labels[valid_mask]
+        y_batch_valid = y_batch[valid_mask]
+        
+        intersections = torch.zeros(self.num_classes, device=self.device)
+        unions = torch.zeros(self.num_classes, device=self.device)
+        class_corrects = torch.zeros(self.num_classes, device=self.device)
+        class_totals = torch.zeros(self.num_classes, device=self.device)
+        
+        for c in range(self.num_classes):
+            pred_c = (pred_labels == c)
+            target_c = (y_batch_valid == c)
+            intersections[c] += (pred_c & target_c).sum()
+            unions[c] += (pred_c | target_c).sum()
+            class_corrects[c] += (pred_c & target_c).sum()
+            class_totals[c] += target_c.sum()
+            
+        ious = intersections / unions.clamp(min=1)
+        accs = class_corrects / class_totals.clamp(min=1)
+        
+        valid_classes = (class_totals > 0)
+        mIoU = ious[valid_classes].mean().item() if valid_classes.any() else 0.0
+        mAcc = accs[valid_classes].mean().item() if valid_classes.any() else 0.0
+        global_acc = class_corrects.sum().item() / class_totals.sum().item() if class_totals.sum().item() > 0 else 0.0
+        
+        self.log('test/mIoU', mIoU, sync_dist=True)
+        self.log('test/mAcc', mAcc, sync_dist=True)
+        self.log('test/global_acc', global_acc, sync_dist=True)
+        
+        return val_loss
+
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
