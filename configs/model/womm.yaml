@@ -28,3 +28,11 @@ model:
     K: 4096
     weights: null
     stop_grad: False
+    vicreg_inv_coeff: 25.0
+    vicreg_std_coeff: 25.0
+    vicreg_cov_coeff: 1.0
+    use_geco: False
+    geco_warmup_epochs: 15
+    geco_tolerance_margin: 1.1
+    geco_alpha: 0.99
+    geco_lr: 0.01

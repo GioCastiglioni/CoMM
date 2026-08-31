@@ -35,6 +35,10 @@ class BaseModel(ABC, LightningModule):
             return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
         return optimizer
 
+    def on_train_epoch_start(self):
+        if hasattr(self, 'loss') and hasattr(self.loss, 'step'):
+            self.loss.step(self.current_epoch, self.trainer.max_epochs)
+
     def training_step(self, batch, batch_idx):
         outputs = self.forward(*batch)
         out_dict = self.loss(outputs)

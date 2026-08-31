@@ -25,7 +25,12 @@ class WoMMLoss(nn.Module):
         stop_grad=False,
         vicreg_inv_coeff=25.0,
         vicreg_std_coeff=25.0,
-        vicreg_cov_coeff=1.0
+        vicreg_cov_coeff=1.0,
+        use_geco=False,
+        geco_warmup_epochs=15,    
+        geco_tolerance_margin=1.1, 
+        geco_alpha=0.99,
+        geco_lr=0.01
     ):
         super().__init__()
         self.weights = weights
@@ -44,6 +49,19 @@ class WoMMLoss(nn.Module):
         self.vicreg_cov_coeff = vicreg_cov_coeff
         self.vicreg_inv_coeff = vicreg_inv_coeff
         
+        self.use_geco = use_geco
+        self.geco_warmup_epochs = geco_warmup_epochs
+        self.geco_tolerance_margin = geco_tolerance_margin
+        self.geco_alpha = geco_alpha
+        self.geco_lr = geco_lr
+
+        self.register_buffer('current_epoch', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('lagrange_lambda', torch.tensor(reg_weight, dtype=torch.float32))
+        self.register_buffer('constraint_ma', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('loss_reg_ema', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('geco_kappa_auto', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('geco_initialized', torch.tensor(False, dtype=torch.bool))
+        
         self._cached_B = -1
         self._cached_target = None
         
@@ -51,6 +69,7 @@ class WoMMLoss(nn.Module):
             self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
     def step(self, current_epoch, total_epochs):
+        self.current_epoch.fill_(current_epoch)
         if self.reconstruction == 'rbf':
             self.sigma = self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1 + math.cos(math.pi * current_epoch / total_epochs))
 
@@ -96,7 +115,6 @@ class WoMMLoss(nn.Module):
         sim_yy = -self.calc_similarity(y.unsqueeze(1), y.unsqueeze(0))
         sim_xy = -self.calc_similarity(x.unsqueeze(1), y.unsqueeze(0))
         
-        # Stop-gradient semantic prior estimation
         with torch.no_grad():
             if self.reconstruction == 'cosine':
                 prior_xx = torch.clamp(sim_xx, min=0.0)
@@ -142,7 +160,6 @@ class WoMMLoss(nn.Module):
     def forward_visreg(self, z: torch.Tensor) -> torch.Tensor:
         # dim: [M, B, D]
         _, B, D = z.shape
-
         mu = z.mean(dim=1, keepdim=True)
         center_loss = mu.pow(2).mean()
 
@@ -198,7 +215,6 @@ class WoMMLoss(nn.Module):
                 reg2 = self.calc_semantic_neg_samples_reg(z2_all[i], tgt2)
                 loss_reg_local.append((reg1 + reg2) / 2.0)
                 
-            
         losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
         w_tensor = torch.tensor(self.weights, device=z1_all[0].device) if self.weights is not None else None
         
@@ -232,12 +248,37 @@ class WoMMLoss(nn.Module):
         else:
             loss_reg = torch.tensor(0.0, device=z1_all[0].device)
             
-        total_loss = (1 - self.reg_weight) * total_sim_loss + self.reg_weight * loss_reg
-        
-        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg, **losses_dict}
+        if self.use_geco:
+            if self.current_epoch < self.geco_warmup_epochs:
+                with torch.no_grad():
+                    if self.loss_reg_ema == 0.0:
+                        self.loss_reg_ema.copy_(loss_reg.detach())
+                    else:
+                        self.loss_reg_ema.mul_(self.geco_alpha).add_(loss_reg.detach(), alpha=1.0 - self.geco_alpha)
+                
+                total_loss = total_sim_loss + self.reg_weight * loss_reg
+                lambda_out = self.reg_weight
+            else:
+                with torch.no_grad():
+                    if not self.geco_initialized:
+                        self.geco_kappa_auto.copy_(self.loss_reg_ema * self.geco_tolerance_margin)
+                        self.constraint_ma.copy_(loss_reg.detach() - self.geco_kappa_auto)
+                        self.geco_initialized.fill_(True)
+                    else:
+                        C_raw = loss_reg.detach() - self.geco_kappa_auto
+                        self.constraint_ma.mul_(self.geco_alpha).add_(C_raw, alpha=1.0 - self.geco_alpha)
+                    
+                    if self.training:
+                        lambda_update = torch.exp(self.geco_lr * self.constraint_ma)
+                        self.lagrange_lambda.mul_(lambda_update)
 
-    def __str__(self):
-        return "{}(rec={}, reg={})".format(type(self).__name__, self.reconstruction, self.regularization)
+                total_loss = total_sim_loss + self.lagrange_lambda.detach() * loss_reg
+                lambda_out = self.lagrange_lambda.item()
+        else:
+            total_loss = total_sim_loss + self.reg_weight * loss_reg
+            lambda_out = self.reg_weight
+            
+        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg, "lambda": lambda_out, **losses_dict}
 
 class SlicingUnivariateTest(torch.nn.Module):
     def __init__(
