@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.segmentation_probe import SegmentationProbingCallback
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 
 @hydra.main(version_base=None, config_name="train_sen1floods11", config_path="./configs")
@@ -64,6 +65,14 @@ def main(cfg: DictConfig):
                                        mask_modalities=mask)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
+    checkpoint_callback = ModelCheckpoint(
+        monitor="Probe/s1_s2_mIoU",
+        mode="max",
+        save_top_k=1,
+        filename="best-checkpoint"
+    )
+    callbacks.append(checkpoint_callback)
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
@@ -86,6 +95,64 @@ def main(cfg: DictConfig):
 
     trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
     wandb.finish()
+
+    print("Starting fine-tuning stage...")
+    from pl_modules.segmentation_finetuner import SegmentationFineTuner
+    
+    class CustomFinetuningCallback(pl.Callback):
+        def __init__(self, unfreeze_at_epoch=5, unfreeze_lr=3e-4):
+            self.unfreeze_at_epoch = unfreeze_at_epoch
+            self.unfreeze_lr = unfreeze_lr
+
+        def on_fit_start(self, trainer, pl_module):
+            for param in pl_module.encoder.parameters():
+                param.requires_grad = False
+                
+        def on_train_epoch_start(self, trainer, pl_module):
+            if trainer.current_epoch == self.unfreeze_at_epoch:
+                print(f"Unfreezing encoder at epoch {trainer.current_epoch}")
+                for param in pl_module.encoder.parameters():
+                    param.requires_grad = True
+                for opt in trainer.optimizers:
+                    for param_group in opt.param_groups:
+                        param_group['lr'] = self.unfreeze_lr
+
+    best_ckpt_path = checkpoint_callback.best_model_path if cfg.mode == "train" else ckpt_path
+    
+    if not best_ckpt_path or not os.path.exists(best_ckpt_path):
+        print("No valid checkpoint found for fine-tuning!")
+        return
+        
+    for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list):
+        print(f"Fine-tuning for {name}...")
+        
+        best_model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
+        state_dict = torch.load(best_ckpt_path, map_location='cpu')["state_dict"]
+        best_model.load_state_dict(state_dict)
+        encoder = best_model.encoder
+        
+        unfreeze_lr = cfg.optim.lr
+        finetuner = SegmentationFineTuner(
+            encoder=encoder,
+            learning_rate=1e-3, 
+            num_classes=2,
+            ignore_index=-1,
+            mask_modalities=mask
+        )
+        
+        ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr)]
+        
+        ft_trainer = instantiate(
+            cfg.trainer,
+            default_root_dir=os.path.join(build_root_dir(cfg), f"finetune_{name}"),
+            max_epochs=55,
+            logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}")],
+            callbacks=ft_callbacks
+        )
+        
+        ft_trainer.fit(finetuner, datamodule=d_mod)
+        ft_trainer.test(finetuner, datamodule=d_mod)
+        wandb.finish()
 
 
 def build_root_dir(cfg: DictConfig):
