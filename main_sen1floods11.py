@@ -88,16 +88,6 @@ def main(cfg: DictConfig):
                                        every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
-    checkpoint_callbacks = {
-        name: ModelCheckpoint(
-            monitor=f"Probe/{name}_mIoU",
-            mode="max",
-            save_top_k=1,
-            filename=f"best-checkpoint-{name}"
-        ) for name in downstream_names
-    }
-    callbacks.extend(list(checkpoint_callbacks.values()))
-
     run_name = str(cfg.model.name) + \
         f"_{str(cfg.model.model.loss_kwargs.reconstruction)}" + \
         f"_{str(cfg.model.model.loss_kwargs.regularization)}" + \
@@ -106,13 +96,27 @@ def main(cfg: DictConfig):
 
     results_dir = setup_results_dir(cfg, run_name)
 
+    checkpoint_callbacks = {
+        name: ModelCheckpoint(
+            monitor=f"Probe/{name}_mIoU",
+            mode="max",
+            save_top_k=1,
+            filename=f"best-checkpoint-{name}",
+            dirpath=results_dir
+        ) for name in downstream_names
+    }
+    callbacks.extend(list(checkpoint_callbacks.values()))
+
+
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
             WandbLogger(project="Sen1Floods11",
-                        name=run_name)],
+                        name=run_name,
+                        save_dir=results_dir)],
         callbacks=callbacks
     )
 
@@ -171,11 +175,12 @@ def main(cfg: DictConfig):
         
         ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr)]
         
+        ft_results_dir = os.path.join(results_dir, f"finetune_{name}")
         ft_trainer = instantiate(
             cfg.trainer,
-            default_root_dir=os.path.join(results_dir, f"finetune_{name}"),
+            default_root_dir=ft_results_dir,
             max_epochs=55,
-            logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}_{run_name}")],
+            logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}_{run_name}", save_dir=ft_results_dir)],
             callbacks=ft_callbacks
         )
         
