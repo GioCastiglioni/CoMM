@@ -350,6 +350,26 @@ class WoMMLoss(nn.Module):
             "geco/active": float(bool(self.geco_initialized)),
         }
 
+    @torch.no_grad()
+    def _alignment_mse(self, z1_all, z2_all, prototype, w_tensor):
+        """Raw MSE of each view against the prototype: a sigma-free alignment probe.
+
+        With 'rbf' the loss is a correntropy whose Taylor expansion weights every even
+        moment of the error by 1/sigma^(2k), so as sigma anneals the reported value
+        climbs even while the underlying error shrinks. Anything that reads alignment
+        as a TREND -- the brake, and the logs -- must therefore read the raw error
+        instead. For 'cosine' (unit vectors, mse = 2 - 2cos) and for 'mse' this is a
+        positive affine transform of loss_sim, so the brake's z-score is unchanged.
+        Never enters the loss.
+        """
+        vals = []
+        for i in range(len(z1_all)):
+            m1 = func.mse_loss(z1_all[i], z2_all[prototype], reduction='none').mean()
+            m2 = func.mse_loss(z2_all[i], z1_all[prototype], reduction='none').mean()
+            vals.append((m1 + m2) / 2.0)
+        stacked = torch.stack(vals)
+        return torch.mean(stacked * w_tensor) if w_tensor is not None else stacked.mean()
+
     def calc_similarity(self, x, y):
         x, y = torch.broadcast_tensors(x, y)
         if self.reconstruction == 'mse':
@@ -510,6 +530,9 @@ class WoMMLoss(nn.Module):
             total_sim_loss = torch.mean(torch.stack(loss_sim))
 
         total_sim_loss = (self.vicreg_inv_coeff if self.regularization == 'vicreg' else 1.0) * total_sim_loss
+
+        # monitoring + brake signal only; detached, never part of total_loss
+        align_mse = self._alignment_mse(z1_all, z2_all, prototype, w_tensor)
         
         # what GECO constrains: for the InfoNCE family the alignment-free denominator,
         # for everything else the regularizer itself (already alignment-free)
@@ -561,7 +584,7 @@ class WoMMLoss(nn.Module):
                               f"{self.regularization}) = {ref.item():.6g}", flush=True)
                     self.kappa_ref_init.fill_(True)
                     self.kappa_ref_valid.fill_(ref is not None)
-                self._geco_update(total_sim_loss, reg_constraint)
+                self._geco_update(align_mse, reg_constraint)
 
             if self.geco_initialized:
                 lambda_value = self.lagrange_lambda.detach()
@@ -575,7 +598,8 @@ class WoMMLoss(nn.Module):
             lambda_out = self.reg_weight
 
         return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg,
-                "loss_reg_cons": reg_constraint, "lambda": lambda_out, **losses_dict}
+                "loss_reg_cons": reg_constraint, "align_mse": align_mse,
+                "lambda": lambda_out, **losses_dict}
 
 class SlicingUnivariateTest(torch.nn.Module):
     def __init__(
