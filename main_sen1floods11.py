@@ -12,6 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.segmentation_probe import SegmentationProbingCallback
 from pytorch_lightning.callbacks import ModelCheckpoint
+from utils import setup_results_dir
 
 
 @hydra.main(version_base=None, config_name="train_sen1floods11", config_path="./configs")
@@ -103,10 +104,12 @@ def main(cfg: DictConfig):
         f"_{str(cfg.model.model.loss_kwargs.reg_weight)}" + \
         str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else "")
 
+    results_dir = setup_results_dir(cfg, run_name)
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
-        default_root_dir=build_root_dir(cfg),
+        default_root_dir=results_dir,
         logger=[
             WandbLogger(project="Sen1Floods11",
                         name=run_name)],
@@ -170,7 +173,7 @@ def main(cfg: DictConfig):
         
         ft_trainer = instantiate(
             cfg.trainer,
-            default_root_dir=os.path.join(build_root_dir(cfg), f"finetune_{name}"),
+            default_root_dir=os.path.join(results_dir, f"finetune_{name}"),
             max_epochs=55,
             logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}_{run_name}")],
             callbacks=ft_callbacks
@@ -179,23 +182,6 @@ def main(cfg: DictConfig):
         ft_trainer.fit(finetuner, datamodule=d_mod)
         ft_trainer.test(finetuner, datamodule=d_mod)
         wandb.finish()
-
-
-def build_root_dir(cfg: DictConfig):
-    # set directory for logs and checkpoints
-    root_dir = os.path.join(cfg.trainer.default_root_dir, cfg.model.name, "sen1floods11")
-
-    # modify `root_dir` if in test mode to match pre-trained model's path
-    if cfg.mode == "test":
-        if getattr(cfg, "ckpt_path", None) is None:
-            print(UserWarning("`ckpt_path` is not set during testing."))
-        else:
-            root_dir = os.path.join(os.path.dirname(cfg.ckpt_path), "test")
-
-    if getattr(cfg, "exp_name", None) is not None:
-        root_dir = os.path.join(root_dir, cfg.exp_name)
-
-    return root_dir
 
 
 if __name__ == '__main__':

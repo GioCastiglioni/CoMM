@@ -523,3 +523,24 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     assert len(schedule) == epochs * niter_per_ep
     return schedule
 
+import time
+
+def setup_results_dir(cfg: DictConfig, run_name: str):
+    # Determine repository root
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    
+    if cfg.mode == "test":
+        if getattr(cfg, "ckpt_path", None) is None:
+            warnings.warn("`ckpt_path` is not set during testing.")
+            return os.path.join(repo_root, "results", "test_unknown")
+        else:
+            return os.path.join(os.path.dirname(cfg.ckpt_path), "test")
+            
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    dir_name = f"{timestamp}_{run_name}"
+    results_dir = os.path.join(repo_root, "results", dir_name)
+    
+    if getattr(cfg, "exp_name", None) is not None:
+        results_dir = os.path.join(results_dir, cfg.exp_name)
+        
+    return results_dir
