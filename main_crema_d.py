@@ -155,9 +155,18 @@ def main(cfg: DictConfig):
             mask_modalities=mask
         )
         
-        ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr)]
-        
         ft_results_dir = os.path.join(results_dir, f"finetune_{name}")
+        
+        ft_checkpoint_callback = ModelCheckpoint(
+            monitor="val/acc",
+            mode="max",
+            save_top_k=1,
+            filename=f"best-finetuned-{name}",
+            dirpath=ft_results_dir
+        )
+        
+        ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr), ft_checkpoint_callback]
+        
         ft_trainer = instantiate(
             cfg.trainer,
             default_root_dir=ft_results_dir,
@@ -167,7 +176,7 @@ def main(cfg: DictConfig):
         )
         
         ft_trainer.fit(finetuner, datamodule=d_mod)
-        ft_trainer.test(finetuner, datamodule=d_mod)
+        ft_trainer.test(finetuner, datamodule=d_mod, ckpt_path="best")
         wandb.finish()
 
 
