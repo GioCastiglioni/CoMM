@@ -27,16 +27,23 @@ class WoMMLoss(nn.Module):
         vicreg_std_coeff=25.0,
         vicreg_cov_coeff=1.0,
         use_geco=False,
-        geco_warmup_epochs=15,    
-        geco_tolerance_margin=0.9, 
-        geco_alpha=0.99,            
-        geco_clamp_min=0.9,        
-        geco_clamp_max=1.1,
-        sim_ema_short_alpha=0.5,
-        sim_ema_long_alpha=0.9,
-        sim_degradation_tolerance=0.01,
-        steps_per_epoch=3,
-        geco_updates_per_epoch=10
+        geco_warmup_epochs=25,
+        geco_kappa_calib_epochs=5,
+        geco_kappa_ramp_epochs=5,
+        geco_kappa_mode='reference',
+        geco_kappa_slack=0.05,
+        geco_kappa_reference_trials=16,
+        geco_tolerance_margin=0.95,
+        geco_response_per_epoch=1.10,
+        geco_max_lambda_change_per_epoch=1.25,
+        geco_ema_halflife_epochs=3.0,
+        geco_deadband_frac=0.25,
+        geco_lambda_range=50.0,
+        geco_updates_per_epoch=10,
+        sim_short_halflife_epochs=1.0,
+        sim_long_halflife_epochs=6.0,
+        geco_degradation_sigmas=2.0,
+        steps_per_epoch=None,
     ):
         super().__init__()
         self.weights = weights
@@ -57,35 +64,273 @@ class WoMMLoss(nn.Module):
         
         self.use_geco = use_geco
         self.geco_warmup_epochs = geco_warmup_epochs
+        self.geco_kappa_calib_epochs = geco_kappa_calib_epochs
+        self.geco_kappa_ramp_epochs = geco_kappa_ramp_epochs
+        self.geco_kappa_mode = geco_kappa_mode
+        self.geco_kappa_slack = geco_kappa_slack
+        self.geco_kappa_reference_trials = geco_kappa_reference_trials
         self.geco_tolerance_margin = geco_tolerance_margin
-        self.geco_alpha = geco_alpha
-        self.geco_clamp_min = geco_clamp_min
-        self.geco_clamp_max = geco_clamp_max
-        self.lbd_step = max(1, steps_per_epoch // geco_updates_per_epoch)
-        self.sim_ema_short_alpha = sim_ema_short_alpha
-        self.sim_ema_long_alpha = sim_ema_long_alpha
-        self.sim_degradation_tolerance = sim_degradation_tolerance
+        self.geco_response_per_epoch = geco_response_per_epoch
+        self.geco_max_lambda_change_per_epoch = geco_max_lambda_change_per_epoch
+        self.geco_ema_halflife_epochs = geco_ema_halflife_epochs
+        self.geco_deadband_frac = geco_deadband_frac
+        self.geco_lambda_range = geco_lambda_range
+        self.geco_updates_per_epoch = geco_updates_per_epoch
+        self.sim_short_halflife_epochs = sim_short_halflife_epochs
+        self.sim_long_halflife_epochs = sim_long_halflife_epochs
+        self.geco_degradation_sigmas = geco_degradation_sigmas
 
-        self.register_buffer('sim_ema_short', torch.tensor(0.0, dtype=torch.float32))
-        self.register_buffer('sim_ema_long', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('current_epoch', torch.tensor(0, dtype=torch.long))
         self.register_buffer('global_step', torch.tensor(0, dtype=torch.long))
         self.register_buffer('lagrange_lambda', torch.tensor(reg_weight, dtype=torch.float32))
         self.register_buffer('constraint_ma', torch.tensor(0.0, dtype=torch.float32))
-        self.register_buffer('loss_reg_ema', torch.tensor(0.0, dtype=torch.float32))
-        self.register_buffer('geco_kappa_auto', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('constraint_ma_init', torch.tensor(False, dtype=torch.bool))
+        self.register_buffer('kappa_start', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('kappa_target', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('kappa', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('kappa_reference', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('kappa_ref_init', torch.tensor(False, dtype=torch.bool))   # attempted
+        self.register_buffer('kappa_ref_valid', torch.tensor(False, dtype=torch.bool))  # usable
         self.register_buffer('geco_initialized', torch.tensor(False, dtype=torch.bool))
-        
+        self.register_buffer('geco_epoch0', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('reg_calib_sum', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('reg_calib_count', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_ema_short', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_ema_long', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_sq_dev_ema', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_ema_count', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_ema_init', torch.tensor(False, dtype=torch.bool))
+        self.register_buffer('sim_trend_z', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('brake_level', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('geco_factor', torch.tensor(1.0, dtype=torch.float32))
+
+        self._schedule_ready = False
+        self.steps_per_epoch = None
+        if steps_per_epoch:
+            self.configure_schedule(steps_per_epoch)
+
         self._cached_B = -1
         self._cached_target = None
-        
+
         if self.regularization == 'sigreg':
             self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
+
+    def configure_schedule(self, steps_per_epoch: int):
+        """Derive the step-level GECO constants from epoch-level hyper-parameters.
+
+        Every controller quantity is specified in epochs so that a single config
+        transfers across datasets with very different steps-per-epoch counts
+        (Sen1Floods11: 3, CREMA-D: 89). Idempotent.
+        """
+        S = max(1, int(steps_per_epoch))
+        if self._schedule_ready and self.steps_per_epoch == S:
+            return
+
+        self.steps_per_epoch = S
+        U = max(1, int(self.geco_updates_per_epoch))
+        self.lbd_step = max(1, int(round(S / U)))
+        self.u_eff = S / self.lbd_step
+
+        self.alpha_c = 0.5 ** (1.0 / max(1e-6, self.geco_ema_halflife_epochs * S))
+        self.alpha_short = 0.5 ** (1.0 / max(1e-6, self.sim_short_halflife_epochs * self.u_eff))
+        self.alpha_long = 0.5 ** (1.0 / max(1e-6, self.sim_long_halflife_epochs * self.u_eff))
+
+        self.margin_gap = max(1e-6, 1.0 - self.geco_tolerance_margin)
+        self.log_f_max = math.log(self.geco_max_lambda_change_per_epoch) / self.u_eff
+        self.gain = math.log(self.geco_response_per_epoch) / (self.u_eff * self.margin_gap)
+        self.deadband = self.geco_deadband_frac * self.margin_gap
+
+        base = max(abs(float(self.reg_weight)), 1e-8)
+        self.lambda_min = base / self.geco_lambda_range
+        self.lambda_max = base * self.geco_lambda_range
+
+        # the trend brake needs enough samples before its running std is meaningful
+        self.sim_brake_min_updates = max(4.0, self.sim_long_halflife_epochs * self.u_eff)
+
+        self._schedule_ready = True
+        if self.use_geco:
+            print(
+                f"[GECO] steps_per_epoch={S} lbd_step={self.lbd_step} updates/epoch={self.u_eff:.2f} "
+                f"alpha_c={self.alpha_c:.5f} f_max={math.exp(self.log_f_max):.5f} gain={self.gain:.4f} "
+                f"deadband={self.deadband:.5f} lambda=[{self.lambda_min:.5g}, {self.lambda_max:.5g}]",
+                flush=True,
+            )
 
     def step(self, current_epoch, total_epochs):
         self.current_epoch.fill_(current_epoch)
         if self.reconstruction == 'rbf':
             self.sigma = self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1 + math.cos(math.pi * current_epoch / total_epochs))
+
+    @torch.no_grad()
+    def _reference_samples(self, shape, device, dtype, normalize):
+        z = torch.randn(*shape, device=device, dtype=dtype)
+        return func.normalize(z, p=2, dim=-1) if normalize else z
+
+    @torch.no_grad()
+    def calibrate_kappa_reference(self, n_emb, B, D, device, dtype):
+        """Score the regularizer on samples drawn from the distribution it rewards.
+
+        Each regularizer here is a statistic with a known optimum: sigreg and visreg
+        measure departure from an isotropic Gaussian, vicreg from a decorrelated
+        unit-variance one, and the InfoNCE-style terms from uniformity on the sphere.
+        Evaluating them on actual samples of that distribution, at the shapes seen in
+        training, yields the achievable floor -- finite-batch bias included -- without
+        any reference to reg_weight. Returns None when the combination has no
+        well-defined target (the caller then falls back to warmup calibration).
+        """
+        reg = self.regularization
+        trials = max(1, int(self.geco_kappa_reference_trials))
+        if reg in ('neg-samples', 'sem-aware', 'neg-samples-multi') and self.reconstruction != 'cosine':
+            return None
+        if reg not in ('sigreg', 'visreg', 'vicreg', 'neg-samples', 'sem-aware', 'neg-samples-multi'):
+            return None
+
+        # the slicing seed must not advance: it would desynchronise the training draws
+        saved_step = self.sigreg.global_step.clone() if reg == 'sigreg' else None
+        vals = []
+        for _ in range(trials):
+            if reg == 'sigreg':
+                vals.append(self.sigreg(self._reference_samples((2 * n_emb * B, D), device, dtype, False)))
+            elif reg == 'visreg':
+                vals.append(0.5 * (self.forward_visreg(self._reference_samples((n_emb, B, D), device, dtype, False))
+                                   + self.forward_visreg(self._reference_samples((n_emb, B, D), device, dtype, False))))
+            elif reg == 'vicreg':
+                vals.append(0.5 * (self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))
+                                   + self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))))
+            else:
+                fn = self.calc_semantic_neg_samples_reg if reg == 'sem-aware' else self.calc_neg_samples_reg
+                vals.append(fn(self._reference_samples((B, D), device, dtype, True),
+                               self._reference_samples((B, D), device, dtype, True)))
+        if saved_step is not None:
+            self.sigreg.global_step.copy_(saved_step)
+        return torch.stack(vals).float().mean()
+
+    def _refresh_kappa(self):
+        """Linearly ramp kappa from where warmup left the regularizer to the target."""
+        ramp = max(1, int(self.geco_kappa_ramp_epochs))
+        t = float(self.current_epoch - self.geco_epoch0) / ramp
+        t = min(1.0, max(0.0, t))
+        self.kappa.copy_(self.kappa_start + t * (self.kappa_target - self.kappa_start))
+
+    @torch.no_grad()
+    def _geco_update(self, sim_val, reg_val):
+        """Advance the GECO controller by one training step."""
+        reg_val = all_reduce(reg_val.detach().float().clone())
+        sim_val = all_reduce(sim_val.detach().float().clone())
+
+        if self.current_epoch < self.geco_warmup_epochs:
+            # accumulate the kappa calibration window over the tail of the warmup
+            if self.current_epoch >= self.geco_warmup_epochs - self.geco_kappa_calib_epochs:
+                self.reg_calib_sum.add_(reg_val)
+                self.reg_calib_count.add_(1.0)
+            return
+
+        if not self.geco_initialized:
+            if self.reg_calib_count > 0:
+                reg_calib = self.reg_calib_sum / self.reg_calib_count
+            else:
+                reg_calib = reg_val
+            self.kappa_start.copy_(reg_calib)
+
+            use_ref = self.geco_kappa_mode == 'reference' and bool(self.kappa_ref_valid)
+            if self.geco_kappa_mode == 'reference' and not use_ref:
+                print("[GECO] kappa_mode='reference' but no reference was calibrated for "
+                      f"({self.reconstruction}, {self.regularization}); falling back to 'warmup'.",
+                      flush=True)
+            if use_ref:
+                # sit marginally above the statistical optimum: exactly at the floor the
+                # regularizer would fight the alignment term for no further gain
+                target = self.kappa_reference + self.geco_kappa_slack * self.kappa_reference.abs()
+            else:
+                target = reg_calib - (1.0 - self.geco_tolerance_margin) * reg_calib.abs()
+            self.kappa_target.copy_(target)
+
+            self.geco_epoch0.copy_(self.current_epoch)
+            self.geco_initialized.fill_(True)
+            print(f"[GECO] kappa calibrated: start={self.kappa_start.item():.6g} "
+                  f"target={self.kappa_target.item():.6g} "
+                  f"(mode={'reference' if use_ref else 'warmup'}, "
+                  f"reference={self.kappa_reference.item():.6g}) "
+                  f"ramp over {int(self.geco_kappa_ramp_epochs)} epochs", flush=True)
+        self._refresh_kappa()
+
+        c_rel = (reg_val - self.kappa) / (self.kappa.abs() + 1e-8)
+
+        if not self.constraint_ma_init:
+            self.constraint_ma.copy_(c_rel)
+            self.constraint_ma_init.fill_(True)
+        elif self.brake_level == 0:
+            # frozen while braking: anti-windup, the integrator keeps its state
+            self.constraint_ma.mul_(self.alpha_c).add_(c_rel, alpha=1.0 - self.alpha_c)
+
+        do_update = (self.global_step % self.lbd_step) == 0
+        self.global_step.add_(1)
+        if not do_update:
+            return
+
+        if not self.sim_ema_init:
+            self.sim_ema_short.copy_(sim_val)
+            self.sim_ema_long.copy_(sim_val)
+            self.sim_sq_dev_ema.zero_()
+            self.sim_ema_init.fill_(True)
+        else:
+            # The innovation w.r.t. the FAST ema estimates the noise floor. Measuring it
+            # against the slow ema instead would absorb the drift into the scale itself,
+            # capping z at 1 - hl_short/hl_long < 1 and making the brake unreachable.
+            innov = sim_val - self.sim_ema_short
+            self.sim_ema_short.mul_(self.alpha_short).add_(sim_val, alpha=1.0 - self.alpha_short)
+            self.sim_ema_long.mul_(self.alpha_long).add_(sim_val, alpha=1.0 - self.alpha_long)
+            self.sim_sq_dev_ema.mul_(self.alpha_long).add_(innov * innov, alpha=1.0 - self.alpha_long)
+        self.sim_ema_count.add_(1.0)
+
+        # z-score of the alignment trend: robust to the sign and scale of loss_sim,
+        # unlike a ratio against |sim_ema_long| (loss_sim is negative for 'cosine').
+        # Under a steady drift z saturates at hl_long/hl_short - 1, so keep
+        # 2 * geco_degradation_sigmas below that ratio.
+        sigma_sim = self.sim_sq_dev_ema.clamp_min(0.0).sqrt()
+        z = (self.sim_ema_short - self.sim_ema_long) / (sigma_sim + 1e-8)
+        self.sim_trend_z.copy_(z)
+
+        if self.sim_ema_count < self.sim_brake_min_updates:
+            level = 0
+        elif z > 2.0 * self.geco_degradation_sigmas:
+            level = 2
+        elif z > self.geco_degradation_sigmas:
+            level = 1
+        else:
+            level = 0
+        self.brake_level.fill_(level)
+
+        if level == 0 and self.constraint_ma.abs() < self.deadband:
+            self.geco_factor.fill_(1.0)
+            return
+
+        log_factor = (self.gain * self.constraint_ma).clamp(-self.log_f_max, self.log_f_max)
+        if level == 1:
+            log_factor = log_factor.clamp_max(0.0)
+        elif level == 2:
+            log_factor = torch.full_like(log_factor, -self.log_f_max)
+
+        factor = torch.exp(log_factor)
+        self.geco_factor.copy_(factor)
+        self.lagrange_lambda.mul_(factor).clamp_(self.lambda_min, self.lambda_max)
+
+    def geco_metrics(self):
+        """Controller internals, for logging on training steps only."""
+        if not self.use_geco:
+            return {}
+        return {
+            "geco/lambda": self.lagrange_lambda.item(),
+            "geco/kappa": self.kappa.item(),
+            "geco/kappa_start": self.kappa_start.item(),
+            "geco/kappa_target": self.kappa_target.item(),
+            "geco/kappa_reference": self.kappa_reference.item(),
+            "geco/c_rel_ma": self.constraint_ma.item(),
+            "geco/factor": self.geco_factor.item(),
+            "geco/sim_trend_z": self.sim_trend_z.item(),
+            "geco/brake_level": float(self.brake_level.item()),
+            "geco/active": float(bool(self.geco_initialized)),
+        }
 
     def calc_similarity(self, x, y):
         x, y = torch.broadcast_tensors(x, y)
@@ -263,63 +508,35 @@ class WoMMLoss(nn.Module):
             loss_reg = torch.tensor(0.0, device=z1_all[0].device)
             
         if self.use_geco:
-            if self.current_epoch < self.geco_warmup_epochs:
-                # EMA is only kept for monitoring purposes during warmup, not for kappa initialization
-                with torch.no_grad():
-                    if self.loss_reg_ema == 0.0:
-                        self.loss_reg_ema.copy_(loss_reg.detach())
-                    else:
-                        self.loss_reg_ema.mul_(self.geco_alpha).add_(loss_reg.detach(), alpha=1.0 - self.geco_alpha)
-                
-                total_loss = total_sim_loss + self.reg_weight * loss_reg
-                lambda_out = self.reg_weight
-            else:
-                with torch.no_grad():
-                    if not self.geco_initialized:
-                        current_reg = loss_reg.detach()
-                        margin_diff = self.geco_tolerance_margin - 1.0
-                        kappa = current_reg + torch.abs(current_reg) * margin_diff
-                        
-                        self.geco_kappa_auto.copy_(kappa)
-                        self.constraint_ma.copy_(current_reg - self.geco_kappa_auto)
-                        self.geco_initialized.fill_(True)
-                    else:
-                        C_raw = loss_reg.detach() - self.geco_kappa_auto
-                        self.constraint_ma.mul_(self.geco_alpha).add_(C_raw, alpha=1.0 - self.geco_alpha)
-                    
-                    if self.training:
-                        if self.global_step % self.lbd_step == 0:
-                            if self.sim_ema_long == 0.0:
-                                self.sim_ema_short.copy_(total_sim_loss.detach())
-                                self.sim_ema_long.copy_(total_sim_loss.detach())
-                            else:
-                                self.sim_ema_short.mul_(self.sim_ema_short_alpha).add_(total_sim_loss.detach(), alpha=1.0 - self.sim_ema_short_alpha)
-                                self.sim_ema_long.mul_(self.sim_ema_long_alpha).add_(total_sim_loss.detach(), alpha=1.0 - self.sim_ema_long_alpha)
-                            
-                            # trend_diff > 0 indicates similarity loss degradation
-                            trend_diff = self.sim_ema_short - self.sim_ema_long
-                            relative_degradation = trend_diff / (torch.abs(self.sim_ema_long) + 1e-8)
-                            
-                            if relative_degradation > self.sim_degradation_tolerance:
-                                lambda_update = torch.tensor(self.geco_clamp_min, device=self.lagrange_lambda.device)
-                                self.constraint_ma.fill_(0.0)
-                            else:
-                                lambda_update = torch.clamp(
-                                    torch.exp(self.constraint_ma), 
-                                    min=self.geco_clamp_min, 
-                                    max=self.geco_clamp_max
-                                )
-                                
-                            self.lagrange_lambda.mul_(lambda_update)
-                        
-                        self.global_step.add_(1)
+            if self.training:
+                if not self._schedule_ready:
+                    raise RuntimeError(
+                        "WoMMLoss: GECO is enabled but configure_schedule(steps_per_epoch) was never "
+                        "called. BaseModel.on_train_epoch_start does this automatically."
+                    )
+                if self.geco_kappa_mode == 'reference' and not self.kappa_ref_init:
+                    ref = self.calibrate_kappa_reference(
+                        n_emb, z1_all[0].shape[0], z1_all[0].shape[-1],
+                        z1_all[0].device, z1_all[0].dtype)
+                    if ref is not None:
+                        self.kappa_reference.copy_(ref)
+                        print(f"[GECO] kappa reference for ({self.reconstruction}, "
+                              f"{self.regularization}) = {ref.item():.6g}", flush=True)
+                    self.kappa_ref_init.fill_(True)
+                    self.kappa_ref_valid.fill_(ref is not None)
+                self._geco_update(total_sim_loss, loss_reg)
 
-                total_loss = total_sim_loss + self.lagrange_lambda.detach() * loss_reg
-                lambda_out = self.lagrange_lambda.item()
+            if self.geco_initialized:
+                lambda_value = self.lagrange_lambda.detach()
+            else:
+                lambda_value = torch.as_tensor(
+                    self.reg_weight, dtype=total_sim_loss.dtype, device=total_sim_loss.device)
+            total_loss = total_sim_loss + lambda_value * loss_reg
+            lambda_out = float(lambda_value)
         else:
             total_loss = total_sim_loss + self.reg_weight * loss_reg
             lambda_out = self.reg_weight
-            
+
         return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg, "lambda": lambda_out, **losses_dict}
 
 class SlicingUnivariateTest(torch.nn.Module):

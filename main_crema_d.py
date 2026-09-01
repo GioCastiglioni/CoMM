@@ -73,11 +73,17 @@ def main(cfg: DictConfig):
                                        every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
+    lk = cfg.model.model.loss_kwargs
+    geco_tag = (
+        f"_geco-{lk.geco_kappa_mode}-w{lk.geco_warmup_epochs}-h{lk.geco_ema_halflife_epochs}"
+        f"-c{lk.geco_max_lambda_change_per_epoch}-u{lk.geco_updates_per_epoch}"
+        if getattr(lk, "use_geco", False) else "_fixedlbd"
+    )
     run_name = str(cfg.model.name) + \
-        f"_{str(cfg.model.model.loss_kwargs.reconstruction)}" + \
-        f"_{str(cfg.model.model.loss_kwargs.regularization)}" + \
-        f"_{str(cfg.model.model.loss_kwargs.reg_weight)}" + \
-        str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else "")
+        f"_{str(lk.reconstruction)}" + \
+        f"_{str(lk.regularization)}" + \
+        f"_{str(lk.reg_weight)}" + \
+        str("_sg" if getattr(lk, "stop_grad", False) else "") + geco_tag
 
     results_dir = setup_results_dir(cfg, run_name)
 

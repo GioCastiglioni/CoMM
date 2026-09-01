@@ -19,6 +19,7 @@ model:
     out_dim: 256 # Output embed dim of MLP projection head
 
   loss_kwargs:
+    variant: "womm"                # 'womm' (WoMMLoss + GECO) | 'comm' (plain CoMM InfoNCE, no GECO)
     reconstruction: "cosine"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
     regularization: "neg-samples"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware' 'neg-samples-multi'
     reg_weight: 0.5
@@ -31,14 +32,33 @@ model:
     vicreg_inv_coeff: 25.0
     vicreg_std_coeff: 25.0
     vicreg_cov_coeff: 1.0
+    # GECO. Every knob is in EPOCH units; the step-level constants (EMA decays,
+    # per-update clamp, gain) are derived in WoMMLoss.configure_schedule from the
+    # actual steps_per_epoch, so one block transfers across datasets.
     use_geco: True
-    geco_warmup_epochs: 25
-    geco_tolerance_margin: 0.95
-    geco_alpha: 0.90
-    geco_clamp_min: 0.98
-    geco_clamp_max: 1.02
+    geco_warmup_epochs: 25             # epochs on fixed reg_weight before the controller starts
+    geco_kappa_calib_epochs: 5         # tail of the warmup averaged as the ramp start
+    geco_kappa_ramp_epochs: 5          # epochs to ramp kappa from that start to the target
+    # 'reference': target = the regularizer's own statistical optimum, measured by scoring
+    #   it on samples of the distribution it rewards (Gaussian / uniform-on-sphere) at the
+    #   training shapes. Independent of reg_weight, and two-sided: it relaxes lambda when
+    #   the model is already over-regularised.
+    # 'warmup': target = geco_tolerance_margin x the level reached during warmup (relative,
+    #   inherits whatever reg_weight produced). Automatic fallback when no optimum exists.
+    geco_kappa_mode: "reference"
+    geco_kappa_slack: 0.05             # sit this far ABOVE the optimum, to leave the
+                                       # alignment term room before over-regularising
+    geco_kappa_reference_trials: 16    # Monte-Carlo draws averaged for the reference
+    geco_tolerance_margin: 0.95        # 'warmup' target; also the nominal violation
+                                       # scale (1 - margin) of the controller gain
+    geco_response_per_epoch: 1.10      # lambda change per epoch at a nominal-margin violation
+    geco_max_lambda_change_per_epoch: 1.25   # hard cap on lambda drift per epoch
+    geco_ema_halflife_epochs: 3.0      # half-life of the constraint EMA
+    geco_deadband_frac: 0.25           # no update while |C_rel| < frac * margin_gap
+    geco_lambda_range: 50.0            # lambda in [reg_weight/range, reg_weight*range]
     geco_updates_per_epoch: 10
-    steps_per_epoch: 0             
-    sim_ema_short_alpha: 0.5
-    sim_ema_long_alpha: 0.9
-    sim_degradation_tolerance: 0.01
+    sim_short_halflife_epochs: 1.0     # alignment-trend brake: fast EMA
+    sim_long_halflife_epochs: 6.0      # alignment-trend brake: slow EMA
+    # Brake z-score saturates at sim_long/sim_short - 1 (= 5 here) under a steady
+    # drift, so keep 2 * geco_degradation_sigmas below that: level 1 at 2, level 2 at 4.
+    geco_degradation_sigmas: 2.0

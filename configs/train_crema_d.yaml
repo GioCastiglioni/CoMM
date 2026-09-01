@@ -13,8 +13,9 @@ trainer:
   deterministic: false
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 1
-  inference_mode: false 
+  inference_mode: false
   precision: "bf16-mixed"
+  log_every_n_steps: 10   # 89 steps/epoch: the default 50 would hide the geco/* curves
 
 optim:
   lr: 3e-4

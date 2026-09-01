@@ -36,6 +36,10 @@ class BaseModel(ABC, LightningModule):
         return optimizer
 
     def on_train_epoch_start(self):
+        if hasattr(self, 'loss') and hasattr(self.loss, 'configure_schedule'):
+            n_batches = self.trainer.num_training_batches
+            if isinstance(n_batches, (int, float)) and math.isfinite(n_batches) and n_batches > 0:
+                self.loss.configure_schedule(int(n_batches))
         if hasattr(self, 'loss') and hasattr(self.loss, 'step'):
             self.loss.step(self.current_epoch, self.trainer.max_epochs)
 
@@ -47,6 +51,10 @@ class BaseModel(ABC, LightningModule):
             print("Loss is {}, stopping training".format(loss.item()))
             sys.exit(1)
         self.log_dict(out_dict, on_step=True, sync_dist=True, prog_bar=True)
+        if hasattr(self.loss, 'geco_metrics'):
+            geco = self.loss.geco_metrics()
+            if geco:
+                self.log_dict(geco, on_step=True, sync_dist=False)
         return loss
 
     def validation_step(self, batch, batch_idx):

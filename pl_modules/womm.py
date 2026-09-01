@@ -29,13 +29,15 @@ class WoMM(BaseModel):
         self.head = projection
 
         # Build the loss
-        if loss_kwargs.get("reconstruction") == "cosine" and loss_kwargs.get("regularization") == "neg-samples" and loss_kwargs.get("reg_weight") == 0.5:
+        loss_kwargs = dict(loss_kwargs)
+        variant = loss_kwargs.pop("variant", "womm")
+        if variant == "comm":
             from losses.comm_loss import CoMMLoss
             class ScaledCoMMLoss(CoMMLoss):
                 def __init__(self, temperature=0.1, weights=None, reg_weight=0.5):
                     super().__init__(temperature=temperature, weights=weights)
                     self.reg_weight = reg_weight
-                
+
                 def forward(self, outputs):
                     out_dict = super().forward(outputs)
                     out_dict["loss"] = out_dict["loss"] * self.reg_weight
@@ -45,8 +47,10 @@ class WoMM(BaseModel):
                 weights=loss_kwargs.get("weights", None),
                 reg_weight=loss_kwargs.get("reg_weight", 0.5)
             )
-        else:
+        elif variant == "womm":
             self.loss = WoMMLoss(**loss_kwargs)
+        else:
+            raise ValueError(f"Unknown loss variant: {variant!r} (expected 'womm' or 'comm')")
 
 
     @staticmethod
