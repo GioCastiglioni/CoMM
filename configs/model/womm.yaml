@@ -21,7 +21,8 @@ model:
   loss_kwargs:
     variant: "womm"                # 'womm' (WoMMLoss + GECO) | 'comm' (plain CoMM InfoNCE, no GECO)
     reconstruction: "cosine"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
-    regularization: "neg-samples"    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware' 'neg-samples-multi'
+    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware' 'neg-samples-multi' 'neg-samples-dcl'
+    regularization: "neg-samples"
     reg_weight: 0.5
     temperature: 0.1
     sigma_max: 2.0
@@ -46,7 +47,7 @@ model:
     # 'warmup': target = geco_tolerance_margin x the level reached during warmup (relative,
     #   inherits whatever reg_weight produced). Automatic fallback when no optimum exists.
     geco_kappa_mode: "reference"
-    geco_kappa_slack: 0.05             # sit this far ABOVE the optimum, to leave the
+    geco_kappa_slack: 0.1             # sit this far ABOVE the optimum, to leave the
                                        # alignment term room before over-regularising
     geco_kappa_reference_trials: 16    # Monte-Carlo draws averaged for the reference
     geco_tolerance_margin: 0.95        # 'warmup' target; also the nominal violation

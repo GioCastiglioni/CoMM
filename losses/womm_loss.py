@@ -12,6 +12,12 @@ def all_reduce(tensor, op="AVG"):
     return tensor
 
 class WoMMLoss(nn.Module):
+    # InfoNCE-denominator regularizers. In the coupled ones the positive pair is part
+    # of the denominator, so the value they report mixes uniformity with alignment;
+    # GECO is fed the positive-free version of all of them (see _neg_samples_pair).
+    NEG_SAMPLE_REGS = ('neg-samples', 'sem-aware', 'neg-samples-multi', 'neg-samples-dcl')
+    PER_EMBED_NEG_REGS = ('neg-samples', 'sem-aware', 'neg-samples-dcl')
+
     def __init__(
         self, 
         weights=None, 
@@ -177,12 +183,18 @@ class WoMMLoss(nn.Module):
         training, yields the achievable floor -- finite-batch bias included -- without
         any reference to reg_weight. Returns None when the combination has no
         well-defined target (the caller then falls back to warmup calibration).
+
+        The InfoNCE terms are always scored positive-free, because that is the
+        quantity the controller constrains: on two independent draws the positive is
+        just another negative, so the coupled value would instead measure the floor
+        at zero alignment -- log(2N-2) + 1/(2 T^2 D) plus the e^0 of an unaligned
+        pair -- and asking training to reach it means asking it to unlearn.
         """
         reg = self.regularization
         trials = max(1, int(self.geco_kappa_reference_trials))
-        if reg in ('neg-samples', 'sem-aware', 'neg-samples-multi') and self.reconstruction != 'cosine':
+        if reg in self.NEG_SAMPLE_REGS and self.reconstruction != 'cosine':
             return None
-        if reg not in ('sigreg', 'visreg', 'vicreg', 'neg-samples', 'sem-aware', 'neg-samples-multi'):
+        if reg not in ('sigreg', 'visreg', 'vicreg') + self.NEG_SAMPLE_REGS:
             return None
 
         # the slicing seed must not advance: it would desynchronise the training draws
@@ -198,9 +210,13 @@ class WoMMLoss(nn.Module):
                 vals.append(0.5 * (self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))
                                    + self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))))
             else:
-                fn = self.calc_semantic_neg_samples_reg if reg == 'sem-aware' else self.calc_neg_samples_reg
-                vals.append(fn(self._reference_samples((B, D), device, dtype, True),
-                               self._reference_samples((B, D), device, dtype, True)))
+                margin = 0.5 if reg == 'sem-aware' else None
+                vals.append(self._neg_samples_reduce(
+                    self._neg_samples_matrix(
+                        self._reference_samples((B, D), device, dtype, True),
+                        self._reference_samples((B, D), device, dtype, True),
+                        margin),
+                    True))
         if saved_step is not None:
             self.sigreg.global_step.copy_(saved_step)
         return torch.stack(vals).float().mean()
@@ -349,54 +365,64 @@ class WoMMLoss(nn.Module):
             
         raise ValueError(f"Unknown reconstruction metric: {self.reconstruction}")
 
-    def calc_neg_samples_reg(self, x, y):
-        # dim: [N, D]
-        N = len(x)
-        
-        sim_xx = -self.calc_similarity(x.unsqueeze(1), x.unsqueeze(0))
-        sim_yy = -self.calc_similarity(y.unsqueeze(1), y.unsqueeze(0))
-        sim_xy = -self.calc_similarity(x.unsqueeze(1), y.unsqueeze(0))
-        
-        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
-        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
-        
-        sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
-        sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
-        sim_Z = torch.cat([sim_Z1, sim_Z2], dim=0)
-        
-        return torch.logsumexp(sim_Z, dim=1).mean()
+    def _neg_samples_matrix(self, x, y, semantic_margin=None):
+        """The [2N, 2N] score matrix whose row-wise logsumexp is the InfoNCE denominator.
 
-    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=0.5):
+        Rows 0..N-1 come from x, rows N..2N-1 from y. Every row holds one positive
+        and 2N-2 negatives, and the positive sits exactly on the main diagonal:
+        sim_Z[i, i] = sim_xy[i, i] and sim_Z[N+i, N+i] = sim_xy.T[i, i]. The two
+        self-similarity diagonals land off-diagonal, at [i, N+i] and [N+i, i], so
+        masking eye(2N) removes the positives and nothing else.
+        """
         # dim: [N, D]
         N = len(x)
-        
+
         sim_xx = -self.calc_similarity(x.unsqueeze(1), x.unsqueeze(0))
         sim_yy = -self.calc_similarity(y.unsqueeze(1), y.unsqueeze(0))
         sim_xy = -self.calc_similarity(x.unsqueeze(1), y.unsqueeze(0))
-        
-        with torch.no_grad():
-            if self.reconstruction == 'cosine':
-                prior_xx = torch.clamp(sim_xx, min=0.0)
-                prior_yy = torch.clamp(sim_yy, min=0.0)
-                prior_xy = torch.clamp(sim_xy, min=0.0)
-            else:
-                prior_xx = sim_xx
-                prior_yy = sim_yy
-                prior_xy = sim_xy
-            
-        sim_xx = sim_xx - semantic_margin * prior_xx
-        sim_yy = sim_yy - semantic_margin * prior_yy
-        sim_xy = sim_xy - semantic_margin * prior_xy
-        
+
+        if semantic_margin is not None:
+            with torch.no_grad():
+                if self.reconstruction == 'cosine':
+                    prior_xx = torch.clamp(sim_xx, min=0.0)
+                    prior_yy = torch.clamp(sim_yy, min=0.0)
+                    prior_xy = torch.clamp(sim_xy, min=0.0)
+                else:
+                    prior_xx = sim_xx
+                    prior_yy = sim_yy
+                    prior_xy = sim_xy
+
+            sim_xx = sim_xx - semantic_margin * prior_xx
+            sim_yy = sim_yy - semantic_margin * prior_yy
+            sim_xy = sim_xy - semantic_margin * prior_xy
+
         sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
         sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
-        
+
         # Matrix shape: [2N, 2N]
         sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
         sim_Z2 = torch.cat([sim_yy, sim_xy.T], dim=1)
-        sim_Z = torch.cat([sim_Z1, sim_Z2], dim=0)
-        
+        return torch.cat([sim_Z1, sim_Z2], dim=0)
+
+    def _neg_samples_reduce(self, sim_Z, drop_pos):
+        if drop_pos:
+            sim_Z = sim_Z - self.INF * torch.eye(sim_Z.shape[0], device=sim_Z.device)
         return torch.logsumexp(sim_Z, dim=1).mean()
+
+    def _neg_samples_pair(self, x, y, semantic_margin=None, drop_pos=False):
+        sim_Z = self._neg_samples_matrix(x, y, semantic_margin)
+        if drop_pos:
+            reg = self._neg_samples_reduce(sim_Z, True)
+            return reg, reg.detach()
+        return (self._neg_samples_reduce(sim_Z, False),
+                self._neg_samples_reduce(sim_Z.detach(), True))
+
+    def calc_neg_samples_reg(self, x, y, drop_pos=False):
+        return self._neg_samples_reduce(self._neg_samples_matrix(x, y), drop_pos)
+
+    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=0.5, drop_pos=False):
+        return self._neg_samples_reduce(
+            self._neg_samples_matrix(x, y, semantic_margin), drop_pos)
 
     def off_diagonal(self, x):
         n, m = x.shape
@@ -455,7 +481,8 @@ class WoMMLoss(nn.Module):
 
         loss_sim = []
         loss_reg_local = []
-        
+        reg_cons_local = []
+
         for i in range(n_emb):
             tgt1 = z2_all[prototype].detach() if self.stop_grad else z2_all[prototype]
             tgt2 = z1_all[prototype].detach() if self.stop_grad else z1_all[prototype]
@@ -463,17 +490,15 @@ class WoMMLoss(nn.Module):
             sim1 = self.calc_similarity(z1_all[i], tgt1).mean()
             sim2 = self.calc_similarity(z2_all[i], tgt2).mean()
             loss_sim.append((sim1 + sim2) / 2.0)
-            
-            if self.regularization == 'neg-samples':
-                reg1 = self.calc_neg_samples_reg(z1_all[i], tgt1)
-                reg2 = self.calc_neg_samples_reg(z2_all[i], tgt2)
-                loss_reg_local.append((reg1 + reg2) / 2.0)
 
-            if self.regularization == 'sem-aware':
-                reg1 = self.calc_semantic_neg_samples_reg(z1_all[i], tgt1)
-                reg2 = self.calc_semantic_neg_samples_reg(z2_all[i], tgt2)
+            if self.regularization in self.PER_EMBED_NEG_REGS:
+                margin = 0.5 if self.regularization == 'sem-aware' else None
+                drop_pos = self.regularization == 'neg-samples-dcl'
+                reg1, cons1 = self._neg_samples_pair(z1_all[i], tgt1, margin, drop_pos)
+                reg2, cons2 = self._neg_samples_pair(z2_all[i], tgt2, margin, drop_pos)
                 loss_reg_local.append((reg1 + reg2) / 2.0)
-                
+                reg_cons_local.append((cons1 + cons2) / 2.0)
+
         losses_dict = {"sim_loss_%i"%i: l for i, l in enumerate(loss_sim)}
         w_tensor = torch.tensor(self.weights, device=z1_all[0].device) if self.weights is not None else None
         
@@ -484,6 +509,10 @@ class WoMMLoss(nn.Module):
 
         total_sim_loss = (self.vicreg_inv_coeff if self.regularization == 'vicreg' else 1.0) * total_sim_loss
         
+        # what GECO constrains: for the InfoNCE family the alignment-free denominator,
+        # for everything else the regularizer itself (already alignment-free)
+        reg_constraint = None
+
         if self.regularization == 'visreg':
             loss_reg = 0.5 * (self.forward_visreg(torch.stack(z1_all, dim=0)) + self.forward_visreg(torch.stack(z2_all, dim=0)))
         elif self.regularization == 'vicreg':
@@ -492,21 +521,27 @@ class WoMMLoss(nn.Module):
             loss_reg = 0.5 * (self.forward_vicreg(z1_global) + self.forward_vicreg(z2_global))
         elif self.regularization == 'sigreg':
             z_all_global = torch.cat(Z, dim=0)
-            loss_reg = self.sigreg(z_all_global) 
-        elif self.regularization == 'neg-samples' or self.regularization == 'sem-aware':
+            loss_reg = self.sigreg(z_all_global)
+        elif self.regularization in self.PER_EMBED_NEG_REGS:
             if w_tensor is not None:
                 loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)
+                reg_constraint = torch.mean(torch.stack(reg_cons_local) * w_tensor)
             else:
                 loss_reg = torch.mean(torch.stack(loss_reg_local))
+                reg_constraint = torch.mean(torch.stack(reg_cons_local))
         elif self.regularization == 'neg-samples-multi':
             tgt1 = z2_all[prototype].detach() if self.stop_grad else z2_all[prototype]
             tgt2 = z1_all[prototype].detach() if self.stop_grad else z1_all[prototype]
-            reg1 = self.calc_neg_samples_reg(z1_all[prototype], tgt1)
-            reg2 = self.calc_neg_samples_reg(z2_all[prototype], tgt2)
+            reg1, cons1 = self._neg_samples_pair(z1_all[prototype], tgt1)
+            reg2, cons2 = self._neg_samples_pair(z2_all[prototype], tgt2)
             loss_reg = (reg1 + reg2) / 2.0
+            reg_constraint = (cons1 + cons2) / 2.0
         else:
             loss_reg = torch.tensor(0.0, device=z1_all[0].device)
-            
+
+        if reg_constraint is None:
+            reg_constraint = loss_reg.detach()
+
         if self.use_geco:
             if self.training:
                 if not self._schedule_ready:
@@ -524,7 +559,7 @@ class WoMMLoss(nn.Module):
                               f"{self.regularization}) = {ref.item():.6g}", flush=True)
                     self.kappa_ref_init.fill_(True)
                     self.kappa_ref_valid.fill_(ref is not None)
-                self._geco_update(total_sim_loss, loss_reg)
+                self._geco_update(total_sim_loss, reg_constraint)
 
             if self.geco_initialized:
                 lambda_value = self.lagrange_lambda.detach()
@@ -537,7 +572,8 @@ class WoMMLoss(nn.Module):
             total_loss = total_sim_loss + self.reg_weight * loss_reg
             lambda_out = self.reg_weight
 
-        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg, "lambda": lambda_out, **losses_dict}
+        return {"loss": total_loss, "loss_sim": total_sim_loss, "loss_reg": loss_reg,
+                "loss_reg_cons": reg_constraint, "lambda": lambda_out, **losses_dict}
 
 class SlicingUnivariateTest(torch.nn.Module):
     def __init__(
