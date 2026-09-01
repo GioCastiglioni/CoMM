@@ -62,6 +62,6 @@ class ClassificationFineTuner(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        milestone = int(self.trainer.max_epochs * 0.8)
+        milestone = int(self.trainer.max_epochs * 0.75)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[milestone], gamma=0.1)
         return [optimizer], [scheduler]

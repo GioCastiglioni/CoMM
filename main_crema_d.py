@@ -69,7 +69,8 @@ def main(cfg: DictConfig):
                                        names=[name],
                                        val_loaders=False,
                                        mask_modalities=mask,
-                                       always_prefix=True)
+                                       always_prefix=True,
+                                       every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
     run_name = str(cfg.model.name) + \

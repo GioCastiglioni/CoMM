@@ -36,6 +36,7 @@ class LinearProbingCallback(Callback):
                  frequency: str = "by_epoch",
                  logging_level: str = "INFO",
                  always_prefix: bool = False,
+                 every_n_epochs: int = 1,
                  **extraction_kwargs):
         """
         :param downstream_data_modules: List of dataset to evaluate
@@ -59,6 +60,7 @@ class LinearProbingCallback(Callback):
         self.fastsearch = fastsearch
         self.frequency = frequency
         self.always_prefix = always_prefix
+        self.every_n_epochs = every_n_epochs
         if self.multilabel and not self.use_sklearn:
             raise NotImplementedError("`multilabel` linear probing not implemented with PyTorch.")
         self.logging_level = logging_level
@@ -103,7 +105,7 @@ class LinearProbingCallback(Callback):
                 pl_module.log_dict(dict(scores), on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
-        if self.frequency == "by_epoch":
+        if self.frequency == "by_epoch" and trainer.current_epoch % self.every_n_epochs == 0:
             self.linear_probing(trainer, pl_module)
 
     def on_fit_end(self, trainer: Trainer, pl_module: LightningModule):
