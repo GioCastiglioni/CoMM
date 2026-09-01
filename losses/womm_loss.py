@@ -34,9 +34,9 @@ class WoMMLoss(nn.Module):
         vicreg_std_coeff=25.0,
         vicreg_cov_coeff=1.0,
         use_geco=False,
-        geco_warmup_epochs=25,
-        geco_kappa_calib_epochs=5,
-        geco_kappa_ramp_epochs=5,
+        geco_warmup_frac=0.25,
+        geco_kappa_calib_frac=0.05,
+        geco_kappa_ramp_frac=0.10,
         geco_kappa_mode='reference',
         geco_kappa_slack=0.05,
         geco_kappa_gap_frac=0.5,
@@ -71,9 +71,9 @@ class WoMMLoss(nn.Module):
         self.vicreg_inv_coeff = vicreg_inv_coeff
         
         self.use_geco = use_geco
-        self.geco_warmup_epochs = geco_warmup_epochs
-        self.geco_kappa_calib_epochs = geco_kappa_calib_epochs
-        self.geco_kappa_ramp_epochs = geco_kappa_ramp_epochs
+        self.geco_warmup_frac = geco_warmup_frac
+        self.geco_kappa_calib_frac = geco_kappa_calib_frac
+        self.geco_kappa_ramp_frac = geco_kappa_ramp_frac
         self.geco_kappa_mode = geco_kappa_mode
         self.geco_kappa_slack = geco_kappa_slack
         self.geco_kappa_gap_frac = geco_kappa_gap_frac
@@ -116,6 +116,7 @@ class WoMMLoss(nn.Module):
 
         self._schedule_ready = False
         self.steps_per_epoch = None
+        self.total_epochs = None
         if steps_per_epoch:
             self.configure_schedule(steps_per_epoch)
 
@@ -125,18 +126,26 @@ class WoMMLoss(nn.Module):
         if self.regularization == 'sigreg':
             self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
-    def configure_schedule(self, steps_per_epoch: int):
-        """Derive the step-level GECO constants from epoch-level hyper-parameters.
+    def configure_schedule(self, steps_per_epoch: int, total_epochs: int = 100):
+        """Derive every step-level GECO constant from the run's own shape.
 
-        Every controller quantity is specified in epochs so that a single config
-        transfers across datasets with very different steps-per-epoch counts
-        (Sen1Floods11: 3, CREMA-D: 89). Idempotent.
+        Nothing here is a tuned hyper-parameter: the phase lengths come from
+        total_epochs and the time constants from steps_per_epoch, so one config
+        transfers across datasets with very different budgets and epoch sizes
+        (Sen1Floods11: 3 steps/epoch, CREMA-D: 89). Idempotent.
         """
         S = max(1, int(steps_per_epoch))
-        if self._schedule_ready and self.steps_per_epoch == S:
+        E = max(1, int(total_epochs))
+        if self._schedule_ready and self.steps_per_epoch == S and self.total_epochs == E:
             return
 
         self.steps_per_epoch = S
+        self.total_epochs = E
+
+        # phase lengths as fractions of the budget, not absolute epoch counts
+        self.warmup_epochs = max(1, int(round(self.geco_warmup_frac * E)))
+        self.kappa_calib_epochs = max(1, int(round(self.geco_kappa_calib_frac * E)))
+        self.kappa_ramp_epochs = max(1, int(round(self.geco_kappa_ramp_frac * E)))
         U = max(1, int(self.geco_updates_per_epoch))
         self.lbd_step = max(1, int(round(S / U)))
         self.u_eff = S / self.lbd_step
@@ -160,7 +169,7 @@ class WoMMLoss(nn.Module):
         self._schedule_ready = True
         if self.use_geco:
             print(
-                f"[GECO] steps_per_epoch={S} lbd_step={self.lbd_step} updates/epoch={self.u_eff:.2f} "
+                f"[GECO] steps_per_epoch={S} epochs={E} warmup={self.warmup_epochs} calib={self.kappa_calib_epochs} ramp={self.kappa_ramp_epochs} lbd_step={self.lbd_step} updates/epoch={self.u_eff:.2f} "
                 f"alpha_c={self.alpha_c:.5f} f_max={math.exp(self.log_f_max):.5f} gain={self.gain:.4f} "
                 f"deadband={self.deadband:.5f} lambda=[{self.lambda_min:.5g}, {self.lambda_max:.5g}]",
                 flush=True,
@@ -227,7 +236,7 @@ class WoMMLoss(nn.Module):
 
     def _refresh_kappa(self):
         """Linearly ramp kappa from where warmup left the regularizer to the target."""
-        ramp = max(1, int(self.geco_kappa_ramp_epochs))
+        ramp = max(1, int(self.kappa_ramp_epochs))
         t = float(self.current_epoch - self.geco_epoch0) / ramp
         t = min(1.0, max(0.0, t))
         self.kappa.copy_(self.kappa_start + t * (self.kappa_target - self.kappa_start))
@@ -238,9 +247,9 @@ class WoMMLoss(nn.Module):
         reg_val = all_reduce(reg_val.detach().float().clone())
         sim_val = all_reduce(sim_val.detach().float().clone())
 
-        if self.current_epoch < self.geco_warmup_epochs:
+        if self.current_epoch < self.warmup_epochs:
             # accumulate the kappa calibration window over the tail of the warmup
-            if self.current_epoch >= self.geco_warmup_epochs - self.geco_kappa_calib_epochs:
+            if self.current_epoch >= self.warmup_epochs - self.kappa_calib_epochs:
                 self.reg_calib_sum.add_(reg_val)
                 self.reg_calib_count.add_(1.0)
             return
@@ -275,7 +284,7 @@ class WoMMLoss(nn.Module):
                   f"anchor={self.kappa_anchor.item():.6g}, "
                   f"reference={self.kappa_reference.item():.6g}, "
                   f"gap_frac={self.geco_kappa_gap_frac}) "
-                  f"ramp over {int(self.geco_kappa_ramp_epochs)} epochs", flush=True)
+                  f"ramp over {int(self.kappa_ramp_epochs)} epochs", flush=True)
         self._refresh_kappa()
 
         c_rel = (reg_val - self.kappa) / (self.kappa.abs() + 1e-8)

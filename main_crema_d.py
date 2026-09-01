@@ -75,8 +75,8 @@ def main(cfg: DictConfig):
 
     lk = cfg.model.model.loss_kwargs
     geco_tag = (
-        f"_geco-{lk.geco_kappa_mode}{lk.geco_kappa_gap_frac}-w{lk.geco_warmup_epochs}-h{lk.geco_ema_halflife_epochs}"
-        f"-c{lk.geco_max_lambda_change_per_epoch}-u{lk.geco_updates_per_epoch}"
+        f"_geco-{lk.geco_kappa_mode}-gap{lk.geco_kappa_gap_frac}"
+        f"-w{lk.geco_warmup_frac}-h{lk.geco_ema_halflife_epochs}"
         if getattr(lk, "use_geco", False) else "_fixedlbd"
     )
     run_name = str(cfg.model.name) + \

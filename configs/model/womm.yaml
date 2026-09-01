@@ -37,9 +37,11 @@ model:
     # per-update clamp, gain) are derived in WoMMLoss.configure_schedule from the
     # actual steps_per_epoch, so one block transfers across datasets.
     use_geco: True
-    geco_warmup_epochs: 25             # epochs on fixed reg_weight before the controller starts
-    geco_kappa_calib_epochs: 5         # tail of the warmup averaged as the ramp start
-    geco_kappa_ramp_epochs: 5          # epochs to ramp kappa from that start to the target
+    # Phase lengths as FRACTIONS of trainer.max_epochs, resolved at runtime, so the
+    # schedule follows the budget instead of being retuned per dataset.
+    geco_warmup_frac: 0.25             # on fixed reg_weight before the controller starts
+    geco_kappa_calib_frac: 0.05        # tail of the warmup averaged as the ramp start
+    geco_kappa_ramp_frac: 0.10         # ramping kappa from that start to the target
     # 'reference': target = the regularizer's own statistical optimum, measured by scoring
     #   it on samples of the distribution it rewards (Gaussian / uniform-on-sphere) at the
     #   training shapes. Independent of reg_weight, and two-sided: it relaxes lambda when

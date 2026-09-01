@@ -39,7 +39,7 @@ class BaseModel(ABC, LightningModule):
         if hasattr(self, 'loss') and hasattr(self.loss, 'configure_schedule'):
             n_batches = self.trainer.num_training_batches
             if isinstance(n_batches, (int, float)) and math.isfinite(n_batches) and n_batches > 0:
-                self.loss.configure_schedule(int(n_batches))
+                self.loss.configure_schedule(int(n_batches), self.trainer.max_epochs)
         if hasattr(self, 'loss') and hasattr(self.loss, 'step'):
             self.loss.step(self.current_epoch, self.trainer.max_epochs)
 
