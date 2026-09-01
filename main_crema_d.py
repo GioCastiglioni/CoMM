@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.linear_probe import LinearProbingCallback
+from pytorch_lightning.callbacks import ModelCheckpoint
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
@@ -70,17 +71,29 @@ def main(cfg: DictConfig):
                                        always_prefix=True)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
+    checkpoint_callbacks = {
+        name: ModelCheckpoint(
+            monitor=f"acc1_{name}",
+            mode="max",
+            save_top_k=1,
+            filename=f"best-checkpoint-{name}"
+        ) for name in downstream_names
+    }
+    callbacks.extend(list(checkpoint_callbacks.values()))
+
+    run_name = str(cfg.model.name) + \
+        f"_{str(cfg.model.model.loss_kwargs.reconstruction)}" + \
+        f"_{str(cfg.model.model.loss_kwargs.regularization)}" + \
+        f"_{str(cfg.model.model.loss_kwargs.reg_weight)}" + \
+        str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else "")
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
         logger=[
             WandbLogger(project="CREMA-D",
-                        name=str(cfg.model.name)+ \
-                            f"_{str(cfg.model.model.loss_kwargs.reconstruction)}"+ \
-                                f"_{str(cfg.model.model.loss_kwargs.regularization)}"+ \
-                                    f"_{str(cfg.model.model.loss_kwargs.reg_weight)}"+ \
-                                        str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else ""))],
+                        name=run_name)],
         callbacks=callbacks
     )
 
@@ -92,6 +105,64 @@ def main(cfg: DictConfig):
 
     trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
     wandb.finish()
+
+    print("Starting fine-tuning stage...")
+    from pl_modules.classification_finetuner import ClassificationFineTuner
+    
+    class CustomFinetuningCallback(pl.Callback):
+        def __init__(self, unfreeze_at_epoch=5, unfreeze_lr=3e-4):
+            self.unfreeze_at_epoch = unfreeze_at_epoch
+            self.unfreeze_lr = unfreeze_lr
+
+        def on_fit_start(self, trainer, pl_module):
+            for param in pl_module.encoder.parameters():
+                param.requires_grad = False
+                
+        def on_train_epoch_start(self, trainer, pl_module):
+            if trainer.current_epoch == self.unfreeze_at_epoch:
+                print(f"Unfreezing encoder at epoch {trainer.current_epoch}")
+                for param in pl_module.encoder.parameters():
+                    param.requires_grad = True
+                for opt in trainer.optimizers:
+                    for param_group in opt.param_groups:
+                        param_group['lr'] = self.unfreeze_lr
+
+    best_ckpt_paths = {name: cb.best_model_path if cfg.mode == "train" else ckpt_path for name, cb in checkpoint_callbacks.items()}
+    
+    for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list):
+        best_ckpt_path = best_ckpt_paths[name]
+        if not best_ckpt_path or not os.path.exists(best_ckpt_path):
+            print(f"No valid checkpoint found for fine-tuning {name}!")
+            continue
+            
+        print(f"Fine-tuning for {name}...")
+        
+        best_model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
+        state_dict = torch.load(best_ckpt_path, map_location='cpu')["state_dict"]
+        best_model.load_state_dict(state_dict)
+        encoder = best_model.encoder
+        
+        unfreeze_lr = cfg.optim.lr
+        finetuner = ClassificationFineTuner(
+            encoder=encoder,
+            learning_rate=1e-3, 
+            num_classes=6,
+            mask_modalities=mask
+        )
+        
+        ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr)]
+        
+        ft_trainer = instantiate(
+            cfg.trainer,
+            default_root_dir=os.path.join(build_root_dir(cfg), f"finetune_{name}"),
+            max_epochs=55,
+            logger=[WandbLogger(project="CREMA-D_Finetune", name=f"Finetune_{name}_{run_name}")],
+            callbacks=ft_callbacks
+        )
+        
+        ft_trainer.fit(finetuner, datamodule=d_mod)
+        ft_trainer.test(finetuner, datamodule=d_mod)
+        wandb.finish()
 
 
 def build_root_dir(cfg: DictConfig):
