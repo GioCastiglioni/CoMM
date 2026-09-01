@@ -105,7 +105,7 @@ class LinearProbingCallback(Callback):
                 pl_module.log_dict(dict(scores), on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
-        if self.frequency == "by_epoch" and trainer.current_epoch % self.every_n_epochs == 0:
+        if self.frequency == "by_epoch" and (trainer.current_epoch + 1) % self.every_n_epochs == 0:
             self.linear_probing(trainer, pl_module)
 
     def on_fit_end(self, trainer: Trainer, pl_module: LightningModule):
