@@ -32,6 +32,9 @@ class WoMMLoss(nn.Module):
         geco_alpha=0.99,            
         geco_clamp_min=0.9,        
         geco_clamp_max=1.1,
+        sim_ema_short_alpha=0.5,
+        sim_ema_long_alpha=0.9,
+        sim_degradation_tolerance=0.01,
         steps_per_epoch=3,
         geco_updates_per_epoch=10
     ):
@@ -59,9 +62,9 @@ class WoMMLoss(nn.Module):
         self.geco_clamp_min = geco_clamp_min
         self.geco_clamp_max = geco_clamp_max
         self.lbd_step = max(1, steps_per_epoch // geco_updates_per_epoch)
-        self.sim_ema_short_alpha = 0.5
-        self.sim_ema_long_alpha = 0.9
-        self.sim_degradation_tolerance = 0.01
+        self.sim_ema_short_alpha = sim_ema_short_alpha
+        self.sim_ema_long_alpha = sim_ema_long_alpha
+        self.sim_degradation_tolerance = sim_degradation_tolerance
 
         self.register_buffer('sim_ema_short', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('sim_ema_long', torch.tensor(0.0, dtype=torch.float32))
