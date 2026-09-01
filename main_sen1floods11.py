@@ -95,17 +95,19 @@ def main(cfg: DictConfig):
     )
     callbacks.append(checkpoint_callback)
 
+    run_name = str(cfg.model.name) + \
+        f"_{str(cfg.model.model.loss_kwargs.reconstruction)}" + \
+        f"_{str(cfg.model.model.loss_kwargs.regularization)}" + \
+        f"_{str(cfg.model.model.loss_kwargs.reg_weight)}" + \
+        str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else "")
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
         default_root_dir=build_root_dir(cfg),
         logger=[
             WandbLogger(project="Sen1Floods11",
-                        name=str(cfg.model.name)+ \
-                            f"_{str(cfg.model.model.loss_kwargs.reconstruction)}"+ \
-                                f"_{str(cfg.model.model.loss_kwargs.regularization)}"+ \
-                                    f"_{str(cfg.model.model.loss_kwargs.reg_weight)}"+ \
-                                        str("_sg" if getattr(cfg.model.model.loss_kwargs, "stop_grad", False) else ""))],
+                        name=run_name)],
         callbacks=callbacks
     )
 
@@ -168,7 +170,7 @@ def main(cfg: DictConfig):
             cfg.trainer,
             default_root_dir=os.path.join(build_root_dir(cfg), f"finetune_{name}"),
             max_epochs=55,
-            logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}")],
+            logger=[WandbLogger(project="Sen1Floods11_Finetune", name=f"Finetune_{name}_{run_name}")],
             callbacks=ft_callbacks
         )
         
