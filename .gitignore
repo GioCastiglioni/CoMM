@@ -3,7 +3,5 @@
 **/lightning_logs/
 **/wandb/
 **/checkpoints/
-**/CoMM_A/
-**/CoMM-LeJEPA/
-**/trifeatures/
+**/results/
 **/multirun/
