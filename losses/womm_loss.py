@@ -17,6 +17,7 @@ class WoMMLoss(nn.Module):
     # GECO is fed the positive-free version of all of them (see _neg_samples_pair).
     NEG_SAMPLE_REGS = ('neg-samples', 'sem-aware', 'neg-samples-multi', 'neg-samples-dcl')
     PER_EMBED_NEG_REGS = ('neg-samples', 'sem-aware', 'neg-samples-dcl')
+    SEM_AWARE_MARGIN = 0.5
 
     def __init__(
         self, 
@@ -38,6 +39,7 @@ class WoMMLoss(nn.Module):
         geco_kappa_ramp_epochs=5,
         geco_kappa_mode='reference',
         geco_kappa_slack=0.05,
+        geco_kappa_gap_frac=0.5,
         geco_kappa_reference_trials=16,
         geco_tolerance_margin=0.95,
         geco_response_per_epoch=1.10,
@@ -74,6 +76,7 @@ class WoMMLoss(nn.Module):
         self.geco_kappa_ramp_epochs = geco_kappa_ramp_epochs
         self.geco_kappa_mode = geco_kappa_mode
         self.geco_kappa_slack = geco_kappa_slack
+        self.geco_kappa_gap_frac = geco_kappa_gap_frac
         self.geco_kappa_reference_trials = geco_kappa_reference_trials
         self.geco_tolerance_margin = geco_tolerance_margin
         self.geco_response_per_epoch = geco_response_per_epoch
@@ -95,6 +98,7 @@ class WoMMLoss(nn.Module):
         self.register_buffer('kappa_target', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('kappa', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('kappa_reference', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('kappa_anchor', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('kappa_ref_init', torch.tensor(False, dtype=torch.bool))   # attempted
         self.register_buffer('kappa_ref_valid', torch.tensor(False, dtype=torch.bool))  # usable
         self.register_buffer('geco_initialized', torch.tensor(False, dtype=torch.bool))
@@ -210,7 +214,7 @@ class WoMMLoss(nn.Module):
                 vals.append(0.5 * (self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))
                                    + self.forward_vicreg(self._reference_samples((n_emb * B, D), device, dtype, False))))
             else:
-                margin = 0.5 if reg == 'sem-aware' else None
+                margin = self.SEM_AWARE_MARGIN if reg == 'sem-aware' else None
                 vals.append(self._neg_samples_reduce(
                     self._neg_samples_matrix(
                         self._reference_samples((B, D), device, dtype, True),
@@ -254,19 +258,23 @@ class WoMMLoss(nn.Module):
                       f"({self.reconstruction}, {self.regularization}); falling back to 'warmup'.",
                       flush=True)
             if use_ref:
-                # sit marginally above the statistical optimum: exactly at the floor the
-                # regularizer would fight the alignment term for no further gain
-                target = self.kappa_reference + self.geco_kappa_slack * self.kappa_reference.abs()
+                anchor = self.kappa_reference + self.geco_kappa_slack * self.kappa_reference.abs()
+                frac = min(1.0, max(0.0, float(self.geco_kappa_gap_frac)))
+                target = self.kappa_start + frac * (anchor - self.kappa_start)
             else:
-                target = reg_calib - (1.0 - self.geco_tolerance_margin) * reg_calib.abs()
+                anchor = reg_calib - (1.0 - self.geco_tolerance_margin) * reg_calib.abs()
+                target = anchor
+            self.kappa_anchor.copy_(anchor)
             self.kappa_target.copy_(target)
 
             self.geco_epoch0.copy_(self.current_epoch)
             self.geco_initialized.fill_(True)
             print(f"[GECO] kappa calibrated: start={self.kappa_start.item():.6g} "
-                  f"target={self.kappa_target.item():.6g} "
+                  f"-> target={self.kappa_target.item():.6g} "
                   f"(mode={'reference' if use_ref else 'warmup'}, "
-                  f"reference={self.kappa_reference.item():.6g}) "
+                  f"anchor={self.kappa_anchor.item():.6g}, "
+                  f"reference={self.kappa_reference.item():.6g}, "
+                  f"gap_frac={self.geco_kappa_gap_frac}) "
                   f"ramp over {int(self.geco_kappa_ramp_epochs)} epochs", flush=True)
         self._refresh_kappa()
 
@@ -290,19 +298,12 @@ class WoMMLoss(nn.Module):
             self.sim_sq_dev_ema.zero_()
             self.sim_ema_init.fill_(True)
         else:
-            # The innovation w.r.t. the FAST ema estimates the noise floor. Measuring it
-            # against the slow ema instead would absorb the drift into the scale itself,
-            # capping z at 1 - hl_short/hl_long < 1 and making the brake unreachable.
             innov = sim_val - self.sim_ema_short
             self.sim_ema_short.mul_(self.alpha_short).add_(sim_val, alpha=1.0 - self.alpha_short)
             self.sim_ema_long.mul_(self.alpha_long).add_(sim_val, alpha=1.0 - self.alpha_long)
             self.sim_sq_dev_ema.mul_(self.alpha_long).add_(innov * innov, alpha=1.0 - self.alpha_long)
         self.sim_ema_count.add_(1.0)
 
-        # z-score of the alignment trend: robust to the sign and scale of loss_sim,
-        # unlike a ratio against |sim_ema_long| (loss_sim is negative for 'cosine').
-        # Under a steady drift z saturates at hl_long/hl_short - 1, so keep
-        # 2 * geco_degradation_sigmas below that ratio.
         sigma_sim = self.sim_sq_dev_ema.clamp_min(0.0).sqrt()
         z = (self.sim_ema_short - self.sim_ema_long) / (sigma_sim + 1e-8)
         self.sim_trend_z.copy_(z)
@@ -340,6 +341,7 @@ class WoMMLoss(nn.Module):
             "geco/kappa": self.kappa.item(),
             "geco/kappa_start": self.kappa_start.item(),
             "geco/kappa_target": self.kappa_target.item(),
+            "geco/kappa_anchor": self.kappa_anchor.item(),
             "geco/kappa_reference": self.kappa_reference.item(),
             "geco/c_rel_ma": self.constraint_ma.item(),
             "geco/factor": self.geco_factor.item(),
@@ -420,7 +422,7 @@ class WoMMLoss(nn.Module):
     def calc_neg_samples_reg(self, x, y, drop_pos=False):
         return self._neg_samples_reduce(self._neg_samples_matrix(x, y), drop_pos)
 
-    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=0.5, drop_pos=False):
+    def calc_semantic_neg_samples_reg(self, x, y, semantic_margin=SEM_AWARE_MARGIN, drop_pos=False):
         return self._neg_samples_reduce(
             self._neg_samples_matrix(x, y, semantic_margin), drop_pos)
 
@@ -492,7 +494,7 @@ class WoMMLoss(nn.Module):
             loss_sim.append((sim1 + sim2) / 2.0)
 
             if self.regularization in self.PER_EMBED_NEG_REGS:
-                margin = 0.5 if self.regularization == 'sem-aware' else None
+                margin = self.SEM_AWARE_MARGIN if self.regularization == 'sem-aware' else None
                 drop_pos = self.regularization == 'neg-samples-dcl'
                 reg1, cons1 = self._neg_samples_pair(z1_all[i], tgt1, margin, drop_pos)
                 reg2, cons2 = self._neg_samples_pair(z2_all[i], tgt2, margin, drop_pos)
