@@ -59,7 +59,12 @@ class WoMMLoss(nn.Module):
         self.geco_clamp_min = geco_clamp_min
         self.geco_clamp_max = geco_clamp_max
         self.lbd_step = max(1, steps_per_epoch // geco_updates_per_epoch)
+        self.sim_ema_short_alpha = 0.5
+        self.sim_ema_long_alpha = 0.9
+        self.sim_degradation_tolerance = 0.01
 
+        self.register_buffer('sim_ema_short', torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer('sim_ema_long', torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer('current_epoch', torch.tensor(0, dtype=torch.long))
         self.register_buffer('global_step', torch.tensor(0, dtype=torch.long))
         self.register_buffer('lagrange_lambda', torch.tensor(reg_weight, dtype=torch.float32))
@@ -268,10 +273,7 @@ class WoMMLoss(nn.Module):
             else:
                 with torch.no_grad():
                     if not self.geco_initialized:
-                        # Use instantaneous loss to avoid EMA lag
                         current_reg = loss_reg.detach()
-                        
-                        # Absolute value correction for margin consistency
                         margin_diff = self.geco_tolerance_margin - 1.0
                         kappa = current_reg + torch.abs(current_reg) * margin_diff
                         
@@ -284,12 +286,27 @@ class WoMMLoss(nn.Module):
                     
                     if self.training:
                         if self.global_step % self.lbd_step == 0:
-                            # Original GECO exponential clamp logic
-                            lambda_update = torch.clamp(
-                                torch.exp(self.constraint_ma), 
-                                min=self.geco_clamp_min, 
-                                max=self.geco_clamp_max
-                            )
+                            if self.sim_ema_long == 0.0:
+                                self.sim_ema_short.copy_(total_sim_loss.detach())
+                                self.sim_ema_long.copy_(total_sim_loss.detach())
+                            else:
+                                self.sim_ema_short.mul_(self.sim_ema_short_alpha).add_(total_sim_loss.detach(), alpha=1.0 - self.sim_ema_short_alpha)
+                                self.sim_ema_long.mul_(self.sim_ema_long_alpha).add_(total_sim_loss.detach(), alpha=1.0 - self.sim_ema_long_alpha)
+                            
+                            # trend_diff > 0 indicates similarity loss degradation
+                            trend_diff = self.sim_ema_short - self.sim_ema_long
+                            relative_degradation = trend_diff / (torch.abs(self.sim_ema_long) + 1e-8)
+                            
+                            if relative_degradation > self.sim_degradation_tolerance:
+                                lambda_update = torch.tensor(self.geco_clamp_min, device=self.lagrange_lambda.device)
+                                self.constraint_ma.fill_(0.0)
+                            else:
+                                lambda_update = torch.clamp(
+                                    torch.exp(self.constraint_ma), 
+                                    min=self.geco_clamp_min, 
+                                    max=self.geco_clamp_max
+                                )
+                                
                             self.lagrange_lambda.mul_(lambda_update)
                         
                         self.global_step.add_(1)
