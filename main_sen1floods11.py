@@ -87,13 +87,15 @@ def main(cfg: DictConfig):
                                        every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
-    checkpoint_callback = ModelCheckpoint(
-        monitor="Probe/s1_s2_mIoU",
-        mode="max",
-        save_top_k=1,
-        filename="best-checkpoint"
-    )
-    callbacks.append(checkpoint_callback)
+    checkpoint_callbacks = {
+        name: ModelCheckpoint(
+            monitor=f"Probe/{name}_mIoU",
+            mode="max",
+            save_top_k=1,
+            filename=f"best-checkpoint-{name}"
+        ) for name in downstream_names
+    }
+    callbacks.extend(list(checkpoint_callbacks.values()))
 
     run_name = str(cfg.model.name) + \
         f"_{str(cfg.model.model.loss_kwargs.reconstruction)}" + \
@@ -141,13 +143,13 @@ def main(cfg: DictConfig):
                     for param_group in opt.param_groups:
                         param_group['lr'] = self.unfreeze_lr
 
-    best_ckpt_path = checkpoint_callback.best_model_path if cfg.mode == "train" else ckpt_path
+    best_ckpt_paths = {name: cb.best_model_path if cfg.mode == "train" else ckpt_path for name, cb in checkpoint_callbacks.items()}
     
-    if not best_ckpt_path or not os.path.exists(best_ckpt_path):
-        print("No valid checkpoint found for fine-tuning!")
-        return
-        
     for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list):
+        best_ckpt_path = best_ckpt_paths[name]
+        if not best_ckpt_path or not os.path.exists(best_ckpt_path):
+            print(f"No valid checkpoint found for fine-tuning {name}!")
+            continue
         print(f"Fine-tuning for {name}...")
         
         best_model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
