@@ -31,11 +31,14 @@ model:
     vicreg_inv_coeff: 25.0
     vicreg_std_coeff: 25.0
     vicreg_cov_coeff: 1.0
-    use_geco: False
+    use_geco: True
     geco_warmup_epochs: 25
     geco_tolerance_margin: 0.95
-    geco_alpha: 0.99
-    geco_clamp_min: 0.9
-    geco_clamp_max: 1.1
+    geco_alpha: 0.90
+    geco_clamp_min: 0.98
+    geco_clamp_max: 1.02
     geco_updates_per_epoch: 10
-    steps_per_epoch: 0      # Automatically set in main
+    steps_per_epoch: 0             
+    sim_ema_short_alpha: 0.5
+    sim_ema_long_alpha: 0.9
+    sim_degradation_tolerance: 0.01
