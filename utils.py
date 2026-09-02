@@ -8,8 +8,9 @@ import random
 from PIL import ImageFilter
 import torch.distributed as dist
 import torch.autograd as autograd
+from dataclasses import dataclass, field
 from omegaconf import DictConfig
-from typing import Tuple, List, Optional
+from typing import Any, Dict, Tuple, List, Optional
 from torch.optim.lr_scheduler import LRScheduler
 from pytorch_lightning import Callback
 from tensorboard.backend.event_processing import event_accumulator
@@ -522,6 +523,87 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     schedule = np.concatenate((warmup_schedule, schedule))
     assert len(schedule) == epochs * niter_per_ep
     return schedule
+
+@dataclass
+class RunIdentity:
+    """Identifiers of one experiment cell, shared by every W&B run it produces."""
+    name: str
+    group: str
+    job_type: str
+    tags: List[str] = field(default_factory=list)
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    def wandb_kwargs(self) -> Dict[str, Any]:
+        """Extra kwargs for `WandbLogger` (forwarded to `wandb.init`)."""
+        return dict(tags=list(self.tags), group=self.group,
+                    job_type=self.job_type, config=dict(self.config))
+
+
+def build_run_identity(cfg: DictConfig,
+                       stage: str = "pretrain",
+                       task: Optional[str] = None) -> RunIdentity:
+    """Build the W&B identity (name, tags, group, config) of a run.
+
+    Pre-training and fine-tuning live in different W&B projects, so each run is
+    initialised separately; calling this with the same `cfg` yields the same
+    filter keys on both sides. Tags are `key:value` strings (filterable in the
+    runs table with `tags`), while `config["exp"]` holds the same fields typed,
+    for numeric filters, grouping and column sorting (`exp.seed`, ...).
+    """
+    lk = cfg.model.model.loss_kwargs
+    use_geco = bool(getattr(lk, "use_geco", False))
+    rec, reg = str(lk.reconstruction), str(lk.regularization)
+    reg_weight, seed = str(lk.reg_weight), int(cfg.seed)
+    stop_grad = bool(getattr(lk, "stop_grad", False))
+    kappa_mode = str(getattr(lk, "geco_kappa_mode", "none"))
+    gap_frac = getattr(lk, "geco_kappa_gap_frac", None)
+
+    geco_tag = (
+        f"_geco-{kappa_mode}-gap{gap_frac}"
+        f"-w{lk.geco_warmup_frac}-h{lk.geco_ema_halflife_epochs}"
+        if use_geco else "_fixedlbd"
+    )
+    # Seed excluded from the group so all seeds of a cell aggregate together.
+    group = str(cfg.model.name) + \
+        f"_{rec}_{reg}_{reg_weight}" + \
+        ("_sg" if stop_grad else "") + geco_tag
+
+    tags = [
+        f"model:{cfg.model.name}",
+        f"stage:{stage}",
+        f"rec:{rec}",
+        f"reg:{reg}",
+        f"regw:{reg_weight}",
+        f"geco:{'on' if use_geco else 'off'}",
+        f"kappa_mode:{kappa_mode}",
+        f"gap:{gap_frac}",
+        f"seed:{seed}",
+    ]
+    if stop_grad:
+        tags.append("stop_grad")
+    if task is not None:
+        tags.append(f"task:{task}")
+
+    config = {"exp": {
+        "model": str(cfg.model.name),
+        "stage": stage,
+        "task": task or "pretrain",
+        "reconstruction": rec,
+        "regularization": reg,
+        "reg_weight": float(lk.reg_weight),
+        "use_geco": use_geco,
+        "kappa_mode": kappa_mode,
+        "kappa_gap_frac": float(gap_frac) if gap_frac is not None else None,
+        "seed": seed,
+        "stop_grad": stop_grad,
+        "group": group,
+    }}
+
+    name = f"{group}_s{seed}" if task is None else f"{group}_s{seed}_{task}"
+    job_type = stage if task is None else f"{stage}_{task}"
+    return RunIdentity(name=name, group=group, job_type=job_type,
+                       tags=tags, config=config)
+
 
 import time
 

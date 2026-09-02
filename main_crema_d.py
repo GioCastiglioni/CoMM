@@ -12,7 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.linear_probe import LinearProbingCallback
 from pytorch_lightning.callbacks import ModelCheckpoint
-from utils import setup_results_dir
+from utils import setup_results_dir, build_run_identity
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
@@ -73,17 +73,8 @@ def main(cfg: DictConfig):
                                        every_n_epochs=5)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
-    lk = cfg.model.model.loss_kwargs
-    geco_tag = (
-        f"_geco-{lk.geco_kappa_mode}-gap{lk.geco_kappa_gap_frac}"
-        f"-w{lk.geco_warmup_frac}-h{lk.geco_ema_halflife_epochs}"
-        if getattr(lk, "use_geco", False) else "_fixedlbd"
-    )
-    run_name = str(cfg.model.name) + \
-        f"_{str(lk.reconstruction)}" + \
-        f"_{str(lk.regularization)}" + \
-        f"_{str(lk.reg_weight)}" + \
-        str("_sg" if getattr(lk, "stop_grad", False) else "") + geco_tag
+    identity = build_run_identity(cfg, stage="pretrain")
+    run_name = identity.name
 
     results_dir = setup_results_dir(cfg, run_name)
 
@@ -105,7 +96,8 @@ def main(cfg: DictConfig):
         logger=[
             WandbLogger(project="CREMA-D",
                         name=run_name,
-                        save_dir=results_dir)],
+                        save_dir=results_dir,
+                        **identity.wandb_kwargs())],
         callbacks=callbacks
     )
 
@@ -174,11 +166,14 @@ def main(cfg: DictConfig):
         
         ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr), ft_checkpoint_callback]
         
+        ft_identity = build_run_identity(cfg, stage="finetune", task=name)
+
         ft_trainer = instantiate(
             cfg.trainer,
             default_root_dir=ft_results_dir,
             max_epochs=55,
-            logger=[WandbLogger(project="CREMA-D_Finetune", name=f"Finetune_{name}_{run_name}", save_dir=ft_results_dir)],
+            logger=[WandbLogger(project="CREMA-D_Finetune", name=f"Finetune_{name}_{run_name}", save_dir=ft_results_dir,
+                                **ft_identity.wandb_kwargs())],
             callbacks=ft_callbacks
         )
         
