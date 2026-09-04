@@ -10,7 +10,9 @@ import torch.utils.data
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
+from dataset.trifeatures import BimodalTrifeatures
 from evaluation.linear_probe import LinearProbingCallback
+from utils import setup_results_dir, build_run_identity
 
 
 @hydra.main(version_base=None, config_name="train_trifeatures", config_path="./configs")
@@ -20,13 +22,10 @@ def main(cfg: DictConfig):
 
     Models currently implemented are:
         - CoMM [ours!]
+        - WoMM [ours!]
         - CLIP
         - CrossSelf
     """
-
-    #torch.backends.cudnn.benchmark = False
-    #torch.backends.cudnn.deterministic = True
-    #torch.use_deterministic_algorithms(True, warn_only=True)
 
     # fix the seed for repro
     pl.seed_everything(cfg.seed, workers=True)
@@ -52,60 +51,62 @@ def main(cfg: DictConfig):
         kwargs["head1"] = instantiate(cfg.model.visual_projection)
         kwargs["head2"] = instantiate(cfg.model.visual_projection)
 
-
     model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
-
     model.save_hyperparameters(cfg)
 
     # Data loading code
+    biased = bool(cfg.data.data_module.get("biased", True))
     data_module = instantiate(cfg.data.data_module, model=cfg.model.name)
 
-    # Linear probing on each tasks from BimodalTrifeatures
-    downstream_names = ["share", "unique1", "unique2", "synergy"]
-    downstream_data_modules = [instantiate(cfg.data.data_module, model="Sup", biased=False, task=t)
-                               for t in downstream_names]
+    # Linear probing on each task from BimodalTrifeatures. Always on unbiased pairs:
+    # under `biased=True` every pair is correlated, which makes the synergy label
+    # constant. `task="all"` lets one feature extraction serve the four tasks.
+    downstream_names = list(BimodalTrifeatures.TASKS)
+    downstream_data_module = instantiate(cfg.data.data_module, model="Sup",
+                                         biased=False, task="all")
+
+    # Each task is also probed from one modality at a time: a unique attribute must
+    # be readable from its own modality only, and synergy from neither alone.
+    probe_masks = {"both": [True, True], "mod1": [True, False], "mod2": [False, True]}
+    # There is no fine-tuning stage here: these accuracies are the result.
+    probe_every_n_epochs = 1
+
+    callbacks = [LinearProbingCallback([downstream_data_module],
+                                       names=[f"{t}_{m}" for t in downstream_names],
+                                       val_loaders=False,
+                                       mask_modalities=[mask],
+                                       split_label_columns=True,
+                                       fastsearch=True,
+                                       every_n_epochs=probe_every_n_epochs)
+                 for m, mask in probe_masks.items()]
+
+    identity = build_run_identity(cfg, stage="pretrain",
+                                  extra={"biased": biased},
+                                  group_suffix="biased" if biased else "unbiased")
+    run_name = identity.name
+    results_dir = setup_results_dir(cfg, run_name)
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
-        default_root_dir=build_root_dir(cfg),
+        default_root_dir=results_dir,
         logger=[
             WandbLogger(project="Trifeatures",
-                        name=str(cfg.model.name)+ \
-                            f"_{str(cfg.model.model.loss_kwargs.reconstruction)}"+ \
-                                f"_{str(cfg.model.model.loss_kwargs.regularization)}"+ \
-                                    f"_{str(cfg.model.model.loss_kwargs.reg_weight)}"+ \
-                                        str("_biased" if cfg.data.data_module.biased else "_unbiased")+ \
-                                            str("_sg" if cfg.model.model.loss_kwargs.stop_grad else ""))],
-        callbacks=[LinearProbingCallback(downstream_data_modules,
-                                         names=downstream_names,
-                                         val_loaders=False)]
+                        name=run_name,
+                        save_dir=results_dir,
+                        **identity.wandb_kwargs())],
+        callbacks=callbacks
     )
 
     if cfg.mode == "train":
         trainer.fit(model, datamodule=data_module)
-        ckpt_path = "best"
+        # Test the final weights: nothing is selected on the eval split.
+        ckpt_path = None
     else:
         ckpt_path = getattr(cfg, "ckpt_path", None)
 
     trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
     wandb.finish()
-
-
-def build_root_dir(cfg: DictConfig):
-    # set directory for logs and checkpoints
-    root_dir = os.path.join(cfg.trainer.default_root_dir, cfg.model.name, "bimodal_trifeatures")
-
-    # modify `root_dir` if in test mode to match pre-trained model's path
-    if cfg.mode == "test":
-        if getattr(cfg, "ckpt_path", None) is None:
-            print(UserWarning("`ckpt_path` is not set during testing."))
-        else:
-            root_dir = os.path.join(os.path.dirname(cfg.ckpt_path), "test")
-
-    if getattr(cfg, "exp_name", None) is not None:
-        root_dir = os.path.join(root_dir, cfg.exp_name)
-
-    return root_dir
 
 
 if __name__ == '__main__':

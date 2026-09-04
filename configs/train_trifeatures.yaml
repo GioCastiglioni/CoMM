@@ -15,15 +15,13 @@ trainer:
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 1
   inference_mode: false # avoid weird bugs during linear probing
-  precision: "bf16-mixed"
+  # precision: deliberately unset (fp32), unlike crema_d / sen1floods11
 
 optim:
   lr: 3e-4
   weight_decay: 1e-4
-  lr_scheduler:
-    warmup_epochs: 5
-    start_warmup_value: 1e-8
-    final_value: 1e-8
+  # No scheduler: configure_optimizers keys off the presence of `lr_scheduler`,
+  # so this block must stay absent rather than null.
 
 
 # Define default visual encoders for bimodal trifeatures dataset
