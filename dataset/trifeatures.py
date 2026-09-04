@@ -2,6 +2,7 @@ import numpy as np
 import scipy.ndimage
 from PIL import Image
 import torch
+import hashlib
 import os
 import re
 import json
@@ -266,7 +267,7 @@ class Trifeatures(torch.utils.data.Dataset):
 
     def _check_integrity(self):
         for split in ["train", "test"]:
-            nb_images = 0
+            names = []
             pattern = r"(\w+)_(\w+)_(\w+)(_[0-9]+)?\.png"
             if not os.path.exists(os.path.join(self.root, split)):
                 return False
@@ -274,14 +275,17 @@ class Trifeatures(torch.utils.data.Dataset):
                 if os.path.isfile(os.path.join(self.root, split, f)):
                     match = re.match(pattern, f)
                     if match:
-                        nb_images += 1
+                        names.append(f)
+            nb_images = len(names)
 
             total_elements = len(self.BASE_SHAPES) * len(self.BASE_COLORS) * len(self.BASE_TEXTURES) # == 1000
             training_images = int(self.split_ratio * self.num_per_combination * total_elements)
             test_images = total_elements - int(self.split_ratio * total_elements)
             if (nb_images != training_images and split == "train") or (nb_images != test_images and split == "test"):
                 return False
-            print(f"{nb_images} images in {split} found.")
+            # The count does not pin down which combinations landed in each split.
+            fingerprint = hashlib.md5("".join(sorted(names)).encode()).hexdigest()[:8]
+            print(f"{nb_images} images in {split} found (split fingerprint {fingerprint}).")
         return True
 
     def generate_data(self):
@@ -634,6 +638,10 @@ class BimodalTrifeatures(Trifeatures):
         attrs = dict(color=self.color_to_index, shape=self.shape_to_index, texture=self.texture_to_index)
         synergy_attr_enc = (list(sorted(attrs[self.synergy_attr[0]].values())),
                             list(sorted(attrs[self.synergy_attr[1]].values())))
+        # M and the pair subsample must depend only on `seed`: `Trifeatures` shares
+        # this generator with `generate_data()`, which consumes it when the images
+        # are rendered in-process.
+        self.rng = np.random.default_rng(seed)
         self.correlated_feature_pairs = list(zip(synergy_attr_enc[0], self.rng.permutation(synergy_attr_enc[1])))
         self.idx_pairs = self._get_idx_pairs()
 
