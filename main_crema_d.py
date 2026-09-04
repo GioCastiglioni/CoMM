@@ -65,12 +65,16 @@ def main(cfg: DictConfig):
     downstream_data_modules = [instantiate(cfg.data.data_module, model="Sup")
                                for _ in downstream_names]
                                
+    # The probe only logs acc1_* on the epochs it runs, so the checkpoints that
+    # monitor those keys must share its cadence: both gate on (current_epoch + 1) % n.
+    probe_every_n_epochs = 5
+
     callbacks = [LinearProbingCallback([d_mod],
                                        names=[name],
                                        val_loaders=False,
                                        mask_modalities=mask,
                                        always_prefix=True,
-                                       every_n_epochs=5)
+                                       every_n_epochs=probe_every_n_epochs)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
     identity = build_run_identity(cfg, stage="pretrain")
@@ -83,6 +87,7 @@ def main(cfg: DictConfig):
             monitor=f"acc1_{name}",
             mode="max",
             save_top_k=1,
+            every_n_epochs=probe_every_n_epochs,
             filename=f"best-checkpoint-{name}",
             dirpath=results_dir
         ) for name in downstream_names
