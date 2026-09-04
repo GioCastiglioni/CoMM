@@ -607,7 +607,10 @@ class BimodalTrifeatures(Trifeatures):
             - "share": returns the share attribute between images
             - "unique1" or "unique2": returns the unique attribute for each modality (1 or 2)
             - "synergy": returns 1 iff synergy attribute is present in both modalities, 0 otherwise
+            - "all": returns one label per task above, in `TASKS` order
     """
+
+    TASKS = ("share", "unique1", "unique2", "synergy")
 
     def __init__(self, root: str,
                  split: str = "train",
@@ -621,7 +624,7 @@ class BimodalTrifeatures(Trifeatures):
                  transform: Optional[Callable] = None,
                  seed: int = 42):
 
-        assert task in {"share", "unique1", "unique2", "synergy"}
+        assert task in set(BimodalTrifeatures.TASKS) | {"all"}
         assert share_attr in {"shape", "texture", "color"}
         assert unique_attr in {"shape", "texture", "color"}
         for attr in synergy_attr:
@@ -673,25 +676,31 @@ class BimodalTrifeatures(Trifeatures):
         subsampling = self.rng.choice(n_allowed, size=self.max_size, replace=False)
         return np.array(allowed_pairs).T[subsampling]
 
+    def _label(self, task, target1, target2):
+        attr_to_id = dict(shape=0, color=1, texture=2)
+        if task == "share":
+            # sanity check
+            assert target1[attr_to_id[self.share_attr]] == target2[attr_to_id[self.share_attr]]
+            return target1[attr_to_id[self.share_attr]]
+        elif task == "unique1":
+            return target1[attr_to_id[self.unique_attr]]
+        elif task == "unique2":
+            return target2[attr_to_id[self.unique_attr]]
+        elif task == "synergy":
+            corr_features = (target1[attr_to_id[self.synergy_attr[0]]], target2[attr_to_id[self.synergy_attr[1]]])
+            return int(corr_features in self.correlated_feature_pairs)
+        else:
+            raise ValueError(f"Unknown task: {task}")
+
     def __getitem__(self, idx):
         idx1, idx2 = self.idx_pairs[idx]
         im1, target1 = super().__getitem__(idx1)
         im2, target2 = super().__getitem__(idx2)
-        attr_to_id = dict(shape=0, color=1, texture=2)
-        if self.task == "share":
-            # sanity check
-            assert target1[attr_to_id[self.share_attr]] == target2[attr_to_id[self.share_attr]]
-            return [im1, im2], target1[attr_to_id[self.share_attr]]
-        elif self.task == "unique1":
-            return [im1, im2], target1[attr_to_id[self.unique_attr]]
-        elif self.task == "unique2":
-            return [im1, im2], target2[attr_to_id[self.unique_attr]]
-        elif self.task == "synergy":
-            corr_features = (target1[attr_to_id[self.synergy_attr[0]]], target2[attr_to_id[self.synergy_attr[1]]])
-            y = int(corr_features in self.correlated_feature_pairs)
-            return [im1, im2], y
-        else:
-            raise ValueError(f"Unknown task: {self.task}")
+        if self.task == "all":
+            return [im1, im2], torch.tensor([self._label(t, target1, target2)
+                                             for t in BimodalTrifeatures.TASKS],
+                                            dtype=torch.long)
+        return [im1, im2], self._label(self.task, target1, target2)
 
     def __len__(self):
         return len(self.idx_pairs)
