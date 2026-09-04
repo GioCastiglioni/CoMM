@@ -37,6 +37,7 @@ class LinearProbingCallback(Callback):
                  logging_level: str = "INFO",
                  always_prefix: bool = False,
                  every_n_epochs: int = 1,
+                 split_label_columns: bool = False,
                  **extraction_kwargs):
         """
         :param downstream_data_modules: List of dataset to evaluate
@@ -50,6 +51,11 @@ class LinearProbingCallback(Callback):
             probing (faster but sub-optimal)
         :param frequency: {'by_epoch', 'by_fit'}
         :param logging_level: in {'INFO', 'DEBUG', 'WARNING', 'CRITICAL', 'ERROR'}
+        :param split_label_columns: if True, expect a single data module whose labels
+            carry one column per task and fit one probe per column, so tasks sharing
+            their inputs cost a single feature extraction. Labels and features come
+            from the same pass, so the columns stay aligned under any shuffling.
+            Unrelated to `multilabel`, which reports F1 on a multi-label target.
         :param extraction_kwargs: Keyword arguments given to `extract_features` method
         """
         self.downstream_data_modules = downstream_data_modules
@@ -61,8 +67,15 @@ class LinearProbingCallback(Callback):
         self.frequency = frequency
         self.always_prefix = always_prefix
         self.every_n_epochs = every_n_epochs
+        self.split_label_columns = split_label_columns
         if self.multilabel and not self.use_sklearn:
             raise NotImplementedError("`multilabel` linear probing not implemented with PyTorch.")
+        if self.split_label_columns:
+            if self.multilabel:
+                raise ValueError("`split_label_columns` and `multilabel` are mutually exclusive.")
+            if len(downstream_data_modules) != 1:
+                raise ValueError("`split_label_columns` expects exactly one data module, "
+                                 f"got {len(downstream_data_modules)}.")
         self.logging_level = logging_level
         self.extraction_kwargs = extraction_kwargs
         if self.names is None:
@@ -73,9 +86,7 @@ class LinearProbingCallback(Callback):
             if not hasattr(pl_module, "extract_features"):
                 raise ValueError("`extract_features` must be implemented for linear probing")
             scores = defaultdict(list)
-            if self.multilabel:
-                scores = defaultdict(list)
-            for downstream_data_mod, dataset in zip(self.downstream_data_modules, self.names):
+            for i, downstream_data_mod in enumerate(self.downstream_data_modules):
                 train_loader, val_loader, test_loader = (
                     downstream_data_mod.train_dataloader(),
                     downstream_data_mod.val_dataloader(),
@@ -85,15 +96,25 @@ class LinearProbingCallback(Callback):
                 val_features, val_labels = None, None
                 if self.val_loaders:
                     val_features, val_labels = pl_module.extract_features(val_loader, **self.extraction_kwargs)
-                scores_ = (
-                    evaluate_linear_probe(train_features, train_labels, test_features,
-                                          test_labels, val_features, val_labels,
-                                          multilabel=self.multilabel, use_sklearn=self.use_sklearn,
-                                          fastsearch=self.fastsearch, logging_level=self.logging_level))
-                for k, v in scores_.items():
-                    scores[k].append(v)
-                print('Linear probe ({d}): {scores}'
-                      .format(d=dataset, scores="  ".join(map(lambda k: "%s=%.3f"%(k, scores_[k]), scores_))))
+                if self.split_label_columns:
+                    n_tasks = train_labels.shape[-1]
+                    if n_tasks != len(self.names):
+                        raise ValueError(f"{n_tasks} label columns but {len(self.names)} names given.")
+                    label_sets = [(self.names[t], train_labels[:, t], test_labels[:, t],
+                                   None if val_labels is None else val_labels[:, t])
+                                  for t in range(n_tasks)]
+                else:
+                    label_sets = [(self.names[i], train_labels, test_labels, val_labels)]
+                for dataset, y_train, y_test, y_val in label_sets:
+                    scores_ = (
+                        evaluate_linear_probe(train_features, y_train, test_features,
+                                              y_test, val_features, y_val,
+                                              multilabel=self.multilabel, use_sklearn=self.use_sklearn,
+                                              fastsearch=self.fastsearch, logging_level=self.logging_level))
+                    for k, v in scores_.items():
+                        scores[k].append(v)
+                    print('Linear probe ({d}): {scores}'
+                          .format(d=dataset, scores="  ".join(map(lambda k: "%s=%.3f"%(k, scores_[k]), scores_))))
 
             for k, v in list(scores.items()):
                 if len(self.names) > 1 or getattr(self, "always_prefix", False):
