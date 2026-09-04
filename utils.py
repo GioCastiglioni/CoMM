@@ -541,7 +541,9 @@ class RunIdentity:
 
 def build_run_identity(cfg: DictConfig,
                        stage: str = "pretrain",
-                       task: Optional[str] = None) -> RunIdentity:
+                       task: Optional[str] = None,
+                       extra: Optional[Dict[str, Any]] = None,
+                       group_suffix: Optional[str] = None) -> RunIdentity:
     """Build the W&B identity (name, tags, group, config) of a run.
 
     Pre-training and fine-tuning live in different W&B projects, so each run is
@@ -549,6 +551,9 @@ def build_run_identity(cfg: DictConfig,
     filter keys on both sides. Tags are `key:value` strings (filterable in the
     runs table with `tags`), while `config["exp"]` holds the same fields typed,
     for numeric filters, grouping and column sorting (`exp.seed`, ...).
+
+    `extra` adds dataset-specific axes to the tags and the typed config;
+    `group_suffix` also puts one in the group and the run name.
     """
     lk = cfg.model.model.loss_kwargs
     use_geco = bool(getattr(lk, "use_geco", False))
@@ -567,6 +572,8 @@ def build_run_identity(cfg: DictConfig,
     group = str(cfg.model.name) + \
         f"_{rec}_{reg}_{reg_weight}" + \
         ("_sg" if stop_grad else "") + geco_tag
+    if group_suffix:
+        group += f"_{group_suffix}"
 
     tags = [
         f"model:{cfg.model.name}",
@@ -583,6 +590,8 @@ def build_run_identity(cfg: DictConfig,
         tags.append("stop_grad")
     if task is not None:
         tags.append(f"task:{task}")
+    for k, v in (extra or {}).items():
+        tags.append(f"{k}:{v}")
 
     config = {"exp": {
         "model": str(cfg.model.name),
@@ -597,6 +606,7 @@ def build_run_identity(cfg: DictConfig,
         "seed": seed,
         "stop_grad": stop_grad,
         "group": group,
+        **(extra or {}),
     }}
 
     name = f"{group}_s{seed}" if task is None else f"{group}_s{seed}_{task}"
