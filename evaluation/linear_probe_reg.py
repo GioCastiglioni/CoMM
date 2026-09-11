@@ -26,6 +26,8 @@ class LinearProbingRegCallback(Callback):
                  use_sklearn: bool = True,
                  frequency: str = "by_epoch",
                  logging_level: str = "INFO",
+                 always_prefix: bool = False,
+                 every_n_epochs: int = 1,
                  **extraction_kwargs):
         """
         :param downstream_data_modules: List of dataset to evaluate
@@ -44,6 +46,8 @@ class LinearProbingRegCallback(Callback):
         self.val_loaders = val_loaders
         self.use_sklearn = use_sklearn
         self.frequency = frequency
+        self.always_prefix = always_prefix
+        self.every_n_epochs = every_n_epochs
         if not self.use_sklearn:
             raise NotImplementedError("Ridge regression not implemented with PyTorch.")
         self.logging_level = logging_level
@@ -77,7 +81,7 @@ class LinearProbingRegCallback(Callback):
                       .format(d=dataset, scores="  ".join(map(lambda k: "%s=%.3f"%(k, scores_[k]), scores_))))
 
             for k, v in list(scores.items()):
-                if len(self.names) > 1:
+                if len(self.names) > 1 or self.always_prefix:
                     for i, dataset in enumerate(self.names):
                         scores["%s_%s"%(k, dataset)] = scores[k][i]
                 scores[k] = np.mean(scores[k])
@@ -86,7 +90,7 @@ class LinearProbingRegCallback(Callback):
                 pl_module.log_dict(dict(scores), on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
-        if self.frequency == "by_epoch":
+        if self.frequency == "by_epoch" and (trainer.current_epoch + 1) % self.every_n_epochs == 0:
             self.linear_probing(trainer, pl_module)
 
     def on_fit_end(self, trainer: Trainer, pl_module: LightningModule):
