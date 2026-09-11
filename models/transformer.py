@@ -20,7 +20,9 @@ class Transformer(nn.Module):
                  max_seq_length: int = 50,
                  return_seq: bool = True,
                  positional_encoding: bool = True,
-                 pad_value: Optional[float] = None):
+                 pad_value: Optional[float] = None,
+                 n_heads: int = 5,
+                 n_layers: int = 5):
         """Initialize Transformer object.
 
         Args:
@@ -31,6 +33,10 @@ class Transformer(nn.Module):
                 Otherwise, returns an embedding.
             positional_encoding: Whether to add positional embedding to input tokens.
             pad_value: Padding values added to the end of each sequence (used to compute attn mask)
+            n_heads: Attention heads; `dim` must be divisible by it. Defaults to the
+                5 heads / 5 layers of FactorCL's MultiBench encoders, which only
+                works for widths that are multiples of 5.
+            n_layers: Encoder layers.
         """
         super().__init__()
         self.embed_dim = dim
@@ -41,8 +47,11 @@ class Transformer(nn.Module):
         self.pad_value = pad_value
         self.positional_embedding = nn.Parameter(
             build_1d_sincos_posemb(max_seq_length, self.embed_dim), requires_grad=False)
-        layer = nn.TransformerEncoderLayer(d_model=self.embed_dim, nhead=5, batch_first=True, norm_first=True)
-        self.transformer = nn.TransformerEncoder(layer, num_layers=5)
+        if self.embed_dim % n_heads != 0:
+            raise ValueError(f"dim={dim} is not divisible by n_heads={n_heads}")
+        layer = nn.TransformerEncoderLayer(d_model=self.embed_dim, nhead=n_heads,
+                                           batch_first=True, norm_first=True)
+        self.transformer = nn.TransformerEncoder(layer, num_layers=n_layers)
 
     def forward(self, x):
         """Apply Transformer to Input.
