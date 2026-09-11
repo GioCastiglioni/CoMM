@@ -12,11 +12,12 @@ def all_reduce(tensor, op="AVG"):
     return tensor
 
 class WoMMLoss(nn.Module):
-    # InfoNCE-denominator regularizers. In the coupled ones the positive pair is part
-    # of the denominator, so the value they report mixes uniformity with alignment;
-    # GECO is fed the positive-free version of all of them (see _neg_samples_pair).
-    NEG_SAMPLE_REGS = ('neg-samples', 'sem-aware', 'neg-samples-multi', 'neg-samples-dcl')
-    PER_EMBED_NEG_REGS = ('neg-samples', 'sem-aware', 'neg-samples-dcl')
+    NEG_SAMPLE_REGS = ('neg-samples', 'sem-aware', 'neg-samples-multi', 'neg-samples-dcl',
+                       'neg-samples-dcl-cross', 'neg-samples-cross')
+    PER_EMBED_NEG_REGS = ('neg-samples', 'sem-aware', 'neg-samples-dcl',
+                          'neg-samples-dcl-cross', 'neg-samples-cross')
+    PROTO_ONLY_REGS = ('sigreg-multi', 'visreg-multi')
+    PER_MASK_REGS = ('sigreg-permask',)
     SEM_AWARE_MARGIN = 0.5
 
     def __init__(
@@ -123,7 +124,7 @@ class WoMMLoss(nn.Module):
         self._cached_B = -1
         self._cached_target = None
 
-        if self.regularization == 'sigreg':
+        if self.regularization in ('sigreg', 'sigreg-multi', 'sigreg-permask'):
             self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
     def configure_schedule(self, steps_per_epoch: int, total_epochs: int = 100):
@@ -207,15 +208,22 @@ class WoMMLoss(nn.Module):
         trials = max(1, int(self.geco_kappa_reference_trials))
         if reg in self.NEG_SAMPLE_REGS and self.reconstruction != 'cosine':
             return None
-        if reg not in ('sigreg', 'visreg', 'vicreg') + self.NEG_SAMPLE_REGS:
+        if reg not in ('sigreg', 'visreg', 'vicreg') + self.NEG_SAMPLE_REGS \
+                + self.PROTO_ONLY_REGS + self.PER_MASK_REGS:
             return None
 
         # the slicing seed must not advance: it would desynchronise the training draws
-        saved_step = self.sigreg.global_step.clone() if reg == 'sigreg' else None
+        saved_step = self.sigreg.global_step.clone() \
+            if reg in ('sigreg', 'sigreg-multi', 'sigreg-permask') else None
         vals = []
         for _ in range(trials):
             if reg == 'sigreg':
                 vals.append(self.sigreg(self._reference_samples((2 * n_emb * B, D), device, dtype, False)))
+            elif reg in ('sigreg-multi', 'sigreg-permask'):
+                vals.append(self.sigreg(self._reference_samples((2 * B, D), device, dtype, False)))
+            elif reg == 'visreg-multi':
+                vals.append(0.5 * (self.forward_visreg(self._reference_samples((1, B, D), device, dtype, False))
+                                   + self.forward_visreg(self._reference_samples((1, B, D), device, dtype, False))))
             elif reg == 'visreg':
                 vals.append(0.5 * (self.forward_visreg(self._reference_samples((n_emb, B, D), device, dtype, False))
                                    + self.forward_visreg(self._reference_samples((n_emb, B, D), device, dtype, False))))
@@ -228,7 +236,7 @@ class WoMMLoss(nn.Module):
                     self._neg_samples_matrix(
                         self._reference_samples((B, D), device, dtype, True),
                         self._reference_samples((B, D), device, dtype, True),
-                        margin),
+                        margin, reg in ('neg-samples-dcl-cross', 'neg-samples-cross')),
                     True))
         if saved_step is not None:
             self.sigreg.global_step.copy_(saved_step)
@@ -396,7 +404,7 @@ class WoMMLoss(nn.Module):
             
         raise ValueError(f"Unknown reconstruction metric: {self.reconstruction}")
 
-    def _neg_samples_matrix(self, x, y, semantic_margin=None):
+    def _neg_samples_matrix(self, x, y, semantic_margin=None, cross_only=False):
         """The [2N, 2N] score matrix whose row-wise logsumexp is the InfoNCE denominator.
 
         Rows 0..N-1 come from x, rows N..2N-1 from y. Every row holds one positive
@@ -427,8 +435,14 @@ class WoMMLoss(nn.Module):
             sim_yy = sim_yy - semantic_margin * prior_yy
             sim_xy = sim_xy - semantic_margin * prior_xy
 
-        sim_xx = sim_xx - self.INF * torch.eye(N, device=x.device)
-        sim_yy = sim_yy - self.INF * torch.eye(N, device=x.device)
+        # `cross_only` drops the whole same-set blocks rather than just their
+        # diagonals: rows of x are then scored against y alone. What remains is the
+        # cross term, which is where a cross-modal conjunction can live at all --
+        # repelling z_x,i from z_x,j is instance discrimination within one set and
+        # carries no information about the pairing.
+        eye = torch.eye(N, device=x.device)
+        sim_xx = sim_xx - self.INF * (torch.ones_like(eye) if cross_only else eye)
+        sim_yy = sim_yy - self.INF * (torch.ones_like(eye) if cross_only else eye)
 
         # Matrix shape: [2N, 2N]
         sim_Z1 = torch.cat([sim_xy, sim_xx], dim=1)
@@ -440,8 +454,9 @@ class WoMMLoss(nn.Module):
             sim_Z = sim_Z - self.INF * torch.eye(sim_Z.shape[0], device=sim_Z.device)
         return torch.logsumexp(sim_Z, dim=1).mean()
 
-    def _neg_samples_pair(self, x, y, semantic_margin=None, drop_pos=False):
-        sim_Z = self._neg_samples_matrix(x, y, semantic_margin)
+    def _neg_samples_pair(self, x, y, semantic_margin=None, drop_pos=False,
+                          cross_only=False):
+        sim_Z = self._neg_samples_matrix(x, y, semantic_margin, cross_only)
         if drop_pos:
             reg = self._neg_samples_reduce(sim_Z, True)
             return reg, reg.detach()
@@ -524,9 +539,11 @@ class WoMMLoss(nn.Module):
 
             if self.regularization in self.PER_EMBED_NEG_REGS:
                 margin = self.SEM_AWARE_MARGIN if self.regularization == 'sem-aware' else None
-                drop_pos = self.regularization == 'neg-samples-dcl'
-                reg1, cons1 = self._neg_samples_pair(z1_all[i], tgt1, margin, drop_pos)
-                reg2, cons2 = self._neg_samples_pair(z2_all[i], tgt2, margin, drop_pos)
+                drop_pos = self.regularization in ('neg-samples-dcl', 'neg-samples-dcl-cross')
+                cross = self.regularization in ('neg-samples-dcl-cross',
+                                                'neg-samples-cross')
+                reg1, cons1 = self._neg_samples_pair(z1_all[i], tgt1, margin, drop_pos, cross)
+                reg2, cons2 = self._neg_samples_pair(z2_all[i], tgt2, margin, drop_pos, cross)
                 loss_reg_local.append((reg1 + reg2) / 2.0)
                 reg_cons_local.append((cons1 + cons2) / 2.0)
 
@@ -556,6 +573,20 @@ class WoMMLoss(nn.Module):
         elif self.regularization == 'sigreg':
             z_all_global = torch.cat(Z, dim=0)
             loss_reg = self.sigreg(z_all_global)
+        elif self.regularization == 'sigreg-permask':
+            # Each mask must look isotropic on its own; the union looking right is
+            # not enough. Views are pooled within a mask so the test keeps 2N samples.
+            per_mask = torch.stack([
+                self.sigreg(torch.cat([z1_all[i], z2_all[i]], dim=0)) for i in range(n_emb)])
+            loss_reg = (torch.mean(per_mask * w_tensor) if w_tensor is not None
+                        else per_mask.mean())
+        elif self.regularization == 'sigreg-multi':
+            # Only the joint embedding is asked to be Gaussian; the unimodal masks
+            # keep their alignment term and receive no distributional constraint.
+            loss_reg = self.sigreg(torch.cat([z1_all[prototype], z2_all[prototype]], dim=0))
+        elif self.regularization == 'visreg-multi':
+            loss_reg = 0.5 * (self.forward_visreg(z1_all[prototype].unsqueeze(0))
+                              + self.forward_visreg(z2_all[prototype].unsqueeze(0)))
         elif self.regularization in self.PER_EMBED_NEG_REGS:
             if w_tensor is not None:
                 loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)
