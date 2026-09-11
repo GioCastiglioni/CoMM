@@ -6,6 +6,11 @@ defaults:
 seed: 42
 mode: "train"
 
+# Fusion width for this benchmark. CoMM uses a 40-d embedding space for the
+# affect datasets (5-head/5-layer Transformer per modality, no latent converter),
+# so `model/womm.yaml` reads it from here instead of its 512-d default.
+embed_dim: 40
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto" # Accelerator given to pytorch-lightning Trainer (eg `cpu` or `gpu`)
@@ -24,6 +29,7 @@ linear_probing:
   fastsearch: false
   logging_level: "INFO"
   frequency: "by_epoch"
+  every_n_epochs: 1
 
 optim:
   lr: 1e-4
@@ -143,6 +149,9 @@ mosi:
       max_seq_length: 50
       positional_encoding: false
     - _target_: models.transformer.Transformer
+      # !! `MultiBenchDataModule` documents MOSI audio as 74-d; this says 5.
+      # The 1x1 conv will raise on the first batch if this is wrong -- check
+      # the loaded shape before trusting a run.
       n_features: 5
       dim: 40
       max_seq_length: 50

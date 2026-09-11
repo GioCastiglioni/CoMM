@@ -1,34 +1,56 @@
 from omegaconf import DictConfig
 import hydra
 from hydra.utils import instantiate
-import numpy as np
 import os
 import torch
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
-from pytorch_lightning.loggers import TensorBoardLogger
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+import wandb
+from utils import setup_results_dir, build_run_identity
+
+
+# Datasets whose downstream target is continuous: they need the regression probe.
+REGRESSION_DATASETS = ("visionandtouch",)
+
+
+def modality_masks(n_modalities: int):
+    """Probe masks: the joint representation plus one modality at a time.
+
+    Reading a task from a single modality is the falsifiability check of the PID
+    reading: a unique attribute must be legible from its own modality only, and a
+    synergistic one from neither alone. The joint mask keeps the name `both` for
+    two modalities so the metric keys match the bimodal datasets already run.
+    """
+    joint = "both" if n_modalities == 2 else "all"
+    masks = {joint: [True] * n_modalities}
+    for i in range(n_modalities):
+        masks[f"mod{i + 1}"] = [j == i for j in range(n_modalities)]
+    return masks
 
 
 @hydra.main(version_base=None, config_name="train_multibench", config_path="./configs")
 def main(cfg: DictConfig):
-    """Training/test of Multi-Modal models on MultiBench dataset.
+    """Training/test of Multi-Modal models on MultiBench datasets.
+
     Models currently implemented are:
         - CoMM [ours!]
+        - WoMM [ours!]
         - CrossSelf
         - CLIP
         - SupervisedClassifier (from pretrained model)
     """
 
     # fix the seed for repro
-    torch.manual_seed(cfg.seed)
-    np.random.seed(cfg.seed)
+    pl.seed_everything(cfg.seed, workers=True)
 
     # create model + save hyper-parameters
     dataset = cfg.data.data_module.dataset # Which MultiBench dataset to load
     kwargs = dict()
-    if cfg.model.name  == "CoMM":
+    if cfg.model.name == "CoMM" or cfg.model.name == "WoMM":
         encoders = instantiate(cfg[dataset]["encoders"]) # encoders specific to each dataset
         adapters = instantiate(cfg[dataset]["adapters"]) # adapters also specific
         kwargs["encoder"] = {
@@ -47,50 +69,67 @@ def main(cfg: DictConfig):
         kwargs["head2"] = instantiate(cfg[dataset].projection_head2)
 
     model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
-
     model.save_hyperparameters(cfg)
 
     # Data loading code
+    modalities = list(cfg[dataset]["modalities"])
     data_module = instantiate(cfg.data.data_module,
                               model=cfg.model.name,
-                              modalities=cfg[dataset]["modalities"],
+                              modalities=modalities,
                               task=cfg[dataset]["task"],
                               **cfg[dataset]["kwargs"])
 
     downstream_data_module = instantiate(cfg.data.data_module,
                                          model="Sup",
-                                         modalities=cfg[dataset]["modalities"],
+                                         modalities=modalities,
                                          task=cfg[dataset]["task"])
+
+    # One probe per mask. `always_prefix` is required even with a single name:
+    # without it every callback would log the bare key `acc1` and overwrite the
+    # others.
+    probe_cfg = cfg.linear_probing_reg if dataset in REGRESSION_DATASETS else cfg.linear_probing
+    callbacks = [instantiate(probe_cfg,
+                             downstream_data_modules=[downstream_data_module],
+                             names=[f"{dataset}_{m}"],
+                             mask_modalities=[mask],
+                             always_prefix=True)
+                 for m, mask in modality_masks(len(modalities)).items()]
+
+    # Resuming: `ckpt_path` continues training from a finished run and `wandb_id`
+    # keeps the curves in that run instead of opening a second one.
+    resume_ckpt = getattr(cfg, "ckpt_path", None) if cfg.mode == "train" else None
+    wandb_id = getattr(cfg, "wandb_id", None)
+    wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
+
+    identity = build_run_identity(cfg, stage="pretrain",
+                                  extra={"dataset": dataset,
+                                         "n_modalities": len(modalities)},
+                                  group_suffix=dataset)
+    run_name = identity.name
+    results_dir = setup_results_dir(cfg, run_name)
+
     # Trainer + fit
     trainer = instantiate(
         cfg.trainer,
-        default_root_dir = build_root_dir(cfg),
-        logger=[TensorBoardLogger(build_root_dir(cfg), name="logs")],
-        callbacks=[instantiate(cfg.linear_probing_reg if cfg.data.data_module.dataset == "visionandtouch" \
-                               else cfg.linear_probing, 
-                               downstream_data_modules=[downstream_data_module], names=[dataset])]
+        default_root_dir=results_dir,
+        logger=[
+            WandbLogger(project="MultiBench",
+                        name=run_name,
+                        save_dir=results_dir,
+                        **wandb_resume,
+                        **identity.wandb_kwargs())],
+        callbacks=callbacks
     )
 
     if cfg.mode == "train":
-        trainer.fit(model, datamodule=data_module)
+        trainer.fit(model, datamodule=data_module, ckpt_path=resume_ckpt)
+        # Test the final weights: nothing is selected on the eval split.
+        ckpt_path = None
     else:
-        trainer.test(model, datamodule=data_module, ckpt_path=getattr(cfg, "ckpt_path", None))
+        ckpt_path = getattr(cfg, "ckpt_path", None)
 
-def build_root_dir(cfg: DictConfig):
-    # set directory for logs and checkpoints
-    root_dir = os.path.join(cfg.trainer.default_root_dir, cfg.model.name, cfg.data.data_module.dataset)
-
-    # modify `root_dir` if in test mode to match pre-trained model's path
-    if cfg.mode == "test":
-        if cfg.ckpt_path is None:
-            print(UserWarning("`ckpt_path` is not set during testing."))
-        else:
-            root_dir = os.path.join(os.path.dirname(cfg.ckpt_path), "test")
-
-    if getattr(cfg, "exp_name", None) is not None:
-        root_dir = os.path.join(root_dir, cfg.exp_name)
-
-    return root_dir
+    trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
+    wandb.finish()
 
 
 if __name__ == '__main__':

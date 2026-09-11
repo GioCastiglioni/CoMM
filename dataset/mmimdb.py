@@ -101,7 +101,7 @@ class MMIMDBDataModule(ImageCaptionDataModule):
                                                  self.augment, "dev", self.tokenizer)
             self.test_dataset = MMIMDBDatasetSLIP(root, metadata, self.img_transform,
                                                  self.augment, "test", self.tokenizer)
-        elif self.model == "CoMM":
+        elif self.model in ("CoMM", "WoMM"):
             self.train_dataset = MMIMDBDatasetMMSSL(root, metadata, self.img_transform,
                                                     self.augment, self.text_augment, "train", self.tokenizer)
             self.val_dataset = MMIMDBDatasetMMSSL(root, metadata, self.img_transform, self.augment,

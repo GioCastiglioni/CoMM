@@ -7,6 +7,11 @@ seed: 42
 
 mode: "train"
 
+# Fusion width for this benchmark. CoMM uses a 40-d embedding space for the
+# affect datasets (5-head/5-layer Transformer per modality, no latent converter),
+# so `model/womm.yaml` reads it from here instead of its 512-d default.
+embed_dim: 40
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto" # Accelerator given to pytorch-lightning Trainer (eg `cpu` or `gpu`)
@@ -25,12 +30,14 @@ linear_probing:
   fastsearch: false
   logging_level: "INFO"
   frequency: "by_epoch"
+  every_n_epochs: 1
 
 linear_probing_reg:
   _target_: evaluation.linear_probe_reg.LinearProbingRegCallback
   use_sklearn: true
   logging_level: "INFO"
   frequency: "by_epoch"
+  every_n_epochs: 1
 
 optim:
   lr: 1e-3

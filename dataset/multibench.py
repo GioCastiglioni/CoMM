@@ -71,7 +71,7 @@ class MultiBenchDataModule(LightningDataModule):
             self.train_dataset = MultiBenchCLIP(self.dataset, "train", **self.dataset_kwargs)
             self.val_dataset = MultiBenchCLIP(self.dataset, "val", **self.dataset_kwargs)
             self.test_dataset = MultiBenchCLIP(self.dataset, "test", **self.dataset_kwargs)
-        elif self.model == "CoMM":
+        elif self.model in ("CoMM", "WoMM"):
             self.train_dataset = MultiBenchSSL(self.dataset, "train", **self.dataset_kwargs)
             self.val_dataset = MultiBenchSSL(self.dataset, "val", **self.dataset_kwargs)
             self.test_dataset = MultiBenchSSL(self.dataset, "test", **self.dataset_kwargs)

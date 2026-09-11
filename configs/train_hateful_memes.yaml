@@ -1,6 +1,9 @@
 seed: 42
 mode: "train"
 
+# Fusion width for this dataset: frozen ViT-B/32 + Sentence-BERT token embeddings.
+embed_dim: 512
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto" # Accelerator given to pytorch-lightning Trainer (eg `cpu` or `gpu`)
