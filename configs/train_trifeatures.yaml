@@ -1,6 +1,9 @@
 seed: 42
 mode: "train"
 
+# Fusion width for this dataset: AlexNet encoders, 512-d (CoMM appendix B.1).
+embed_dim: 512
+
 
 trainer:
   _target_: pytorch_lightning.Trainer
