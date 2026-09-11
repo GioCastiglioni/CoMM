@@ -55,7 +55,8 @@ def main(cfg: DictConfig):
                              downstream_data_modules=[downstream_data_module],
                              names=[f"{dataset}_{m}"],
                              mask_modalities=[mask],
-                             always_prefix=True)
+                             always_prefix=True,
+                             _convert_="all")
                  for m, mask in PROBE_MASKS.items()]
     # `save_last` gives the resume path a deterministic target; the monitored copy
     # keeps CoMM's original protocol (best epoch on the eval split) available.

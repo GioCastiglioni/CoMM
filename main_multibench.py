@@ -92,7 +92,8 @@ def main(cfg: DictConfig):
                              downstream_data_modules=[downstream_data_module],
                              names=[f"{dataset}_{m}"],
                              mask_modalities=[mask],
-                             always_prefix=True)
+                             always_prefix=True,
+                             _convert_="all")
                  for m, mask in modality_masks(len(modalities)).items()]
 
     # Resuming: `ckpt_path` continues training from a finished run and `wandb_id`

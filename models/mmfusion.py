@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from collections.abc import Sequence
 from typing import List, Optional, Union
 from einops import repeat
 from collections import OrderedDict
@@ -239,7 +240,8 @@ class MMFusion(nn.Module):
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, list) and len(mask_modalities)>0 and isinstance(mask_modalities[0], list):
+        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], Sequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
 
@@ -311,7 +313,8 @@ class LinearFusion(nn.Module):
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, list) and len(mask_modalities)>0 and isinstance(mask_modalities[0], list):
+        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], Sequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
         assert len(mask_modalities) == self.num_modalities, (
@@ -361,7 +364,8 @@ class MLPFusion(nn.Module):
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, list) and len(mask_modalities)>0 and isinstance(mask_modalities[0], list):
+        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], Sequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
         assert len(mask_modalities) == self.num_modalities, (
