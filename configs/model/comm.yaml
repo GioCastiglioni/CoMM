@@ -4,7 +4,9 @@ model:
   _target_: pl_modules.comm.CoMM
   encoder: # Multi-modal model to be trained
     _target_: models.mmfusion.MMFusion
-    embed_dim: 40
+    # Fusion width, taken from the root of the train config so one value per
+    # dataset drives every model (MultiBench 40, raw-image datasets 512).
+    embed_dim: ${oc.select:embed_dim,512}
     fusion: "concat"
     pool: "cls"
     n_heads: 8

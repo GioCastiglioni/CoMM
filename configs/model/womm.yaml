@@ -4,7 +4,7 @@ model:
   _target_: pl_modules.womm.WoMM
   encoder: # Multi-modal model to be trained
     _target_: models.mmfusion.MMFusion
-    embed_dim: 512
+    embed_dim: ${oc.select:embed_dim,512}
     fusion: "concat"
     pool: "cls"
     n_heads: 8
@@ -21,7 +21,6 @@ model:
   loss_kwargs:
     variant: "womm"                # 'womm' (WoMMLoss + GECO) | 'comm' (plain CoMM InfoNCE, no GECO)
     reconstruction: "cosine"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
-    # 'sigreg' 'vicreg' 'visreg' 'neg-samples' 'sem-aware' 'neg-samples-multi' 'neg-samples-dcl'
     regularization: "neg-samples"
     reg_weight: 0.5
     temperature: 0.1
