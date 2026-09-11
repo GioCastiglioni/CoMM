@@ -555,13 +555,19 @@ def build_run_identity(cfg: DictConfig,
     `extra` adds dataset-specific axes to the tags and the typed config;
     `group_suffix` also puts one in the group and the run name.
     """
-    lk = cfg.model.model.loss_kwargs
-    use_geco = bool(getattr(lk, "use_geco", False))
-    rec, reg = str(lk.reconstruction), str(lk.regularization)
-    reg_weight, seed = str(lk.reg_weight), int(cfg.seed)
-    stop_grad = bool(getattr(lk, "stop_grad", False))
-    kappa_mode = str(getattr(lk, "geco_kappa_mode", "none"))
-    gap_frac = getattr(lk, "geco_kappa_gap_frac", None)
+    lk = getattr(cfg.model.model, "loss_kwargs", None)
+    seed = int(cfg.seed)
+    # Only WoMM exposes the alignment/regularization axes. Baselines (CoMM, CLIP,
+    # CrossSelf) keep an identity built from the model name alone, so their runs
+    # stay comparable without borrowing loss axes they do not have.
+    has_loss_axes = lk is not None and getattr(lk, "reconstruction", None) is not None
+    use_geco = bool(getattr(lk, "use_geco", False)) if lk is not None else False
+    rec = str(lk.reconstruction) if has_loss_axes else "na"
+    reg = str(lk.regularization) if has_loss_axes else "na"
+    reg_weight = str(lk.reg_weight) if has_loss_axes else "na"
+    stop_grad = bool(getattr(lk, "stop_grad", False)) if lk is not None else False
+    kappa_mode = str(getattr(lk, "geco_kappa_mode", "none")) if lk is not None else "none"
+    gap_frac = getattr(lk, "geco_kappa_gap_frac", None) if lk is not None else None
 
     geco_tag = (
         f"_geco-{kappa_mode}-gap{gap_frac}"
@@ -569,9 +575,9 @@ def build_run_identity(cfg: DictConfig,
         if use_geco else "_fixedlbd"
     )
     # Seed excluded from the group so all seeds of a cell aggregate together.
-    group = str(cfg.model.name) + \
-        f"_{rec}_{reg}_{reg_weight}" + \
-        ("_sg" if stop_grad else "") + geco_tag
+    group = str(cfg.model.name)
+    if has_loss_axes:
+        group += f"_{rec}_{reg}_{reg_weight}" + ("_sg" if stop_grad else "") + geco_tag
     if group_suffix:
         group += f"_{group_suffix}"
 
@@ -599,7 +605,7 @@ def build_run_identity(cfg: DictConfig,
         "task": task or "pretrain",
         "reconstruction": rec,
         "regularization": reg,
-        "reg_weight": float(lk.reg_weight),
+        "reg_weight": float(lk.reg_weight) if has_loss_axes else None,
         "use_geco": use_geco,
         "kappa_mode": kappa_mode,
         "kappa_gap_frac": float(gap_frac) if gap_frac is not None else None,
