@@ -80,6 +80,12 @@ def main(cfg: DictConfig):
                                        every_n_epochs=probe_every_n_epochs)
                  for m, mask in probe_masks.items()]
 
+    # Resuming: `ckpt_path` continues training from a finished run and `wandb_id`
+    # keeps the curves in that run instead of opening a second one.
+    resume_ckpt = getattr(cfg, "ckpt_path", None) if cfg.mode == "train" else None
+    wandb_id = getattr(cfg, "wandb_id", None)
+    wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
+
     identity = build_run_identity(cfg, stage="pretrain",
                                   extra={"biased": biased},
                                   group_suffix="biased" if biased else "unbiased")
@@ -94,12 +100,13 @@ def main(cfg: DictConfig):
             WandbLogger(project="Trifeatures",
                         name=run_name,
                         save_dir=results_dir,
+                        **wandb_resume,
                         **identity.wandb_kwargs())],
         callbacks=callbacks
     )
 
     if cfg.mode == "train":
-        trainer.fit(model, datamodule=data_module)
+        trainer.fit(model, datamodule=data_module, ckpt_path=resume_ckpt)
         # Test the final weights: nothing is selected on the eval split.
         ckpt_path = None
     else:
