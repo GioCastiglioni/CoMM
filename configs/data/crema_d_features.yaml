@@ -1,0 +1,13 @@
+name: "crema_d_features"
+
+data_module:
+  _target_: dataset.crema_d_features.CREMADFeaturesDataModule
+  root: "/home/gcastiglioni/workspace/datasets/CREMA-D-features"
+  modalities: ["video", "audio"]
+  # Read the pooled vectors as 1-length sequences instead of the temporal ones.
+  pooled: false
+  # Same time-series augmentation as the MultiBench affect datasets: Gaussian
+  # noise composed with dropping a random share of the sequence.
+  augmentations: "drop+noise"
+  batch_size: 64
+  num_workers: 4
