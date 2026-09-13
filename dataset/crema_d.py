@@ -64,7 +64,7 @@ class CREMADDataModule(LightningDataModule):
         if self.model == "Sup":
             self.train_dataset = CREMADDatasetSup(self.root, split="train", video_transform=self.video_transform, audio_transform=self.audio_transform)
             self.val_dataset = CREMADDatasetSup(self.root, split="test", video_transform=self.video_transform, audio_transform=self.audio_transform)
-        elif self.model == "CoMM" or self.model == "WoMM":
+        elif self.model in ("CoMM", "WoMM", "MMSD"):
             self.train_dataset = CREMADDatasetMMSSL(self.root, split="train", video_transform=self.video_transform, audio_transform=self.audio_transform, video_augment=self.video_augment, audio_augment=self.audio_augment)
             self.val_dataset = CREMADDatasetMMSSL(self.root, split="test", video_transform=self.video_transform, audio_transform=self.audio_transform, video_augment=self.video_augment, audio_augment=self.audio_augment)
         else:

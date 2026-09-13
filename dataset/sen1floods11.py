@@ -59,7 +59,7 @@ class Sen1Floods11DataModule(LightningDataModule):
                                                       pixel_transform=None,
                                                       s1_normalize=self.s1_normalize, 
                                                       s2_normalize=self.s2_normalize)
-        elif self.model == "CoMM" or self.model == "WoMM":
+        elif self.model in ("CoMM", "WoMM", "MMSD"):
             self.train_dataset = Sen1Floods11DatasetMMSSL(self.root, split="train", 
                                                           spatial_transform=self.spatial_augment, 
                                                           pixel_transform=self.pixel_augment,

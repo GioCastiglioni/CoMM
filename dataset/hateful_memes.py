@@ -83,7 +83,7 @@ class HatefulMemesDataModule(ImageCaptionDataModule):
                                                  self.augment, "dev", self.tokenizer)
             self.test_dataset = HatefulMemesDatasetSLIP(root, metadata, self.img_transform,
                                                  self.augment, "dev", self.tokenizer)
-        elif self.model in ("CoMM", "WoMM"):
+        elif self.model in ("CoMM", "WoMM", "MMSD"):
             self.train_dataset = HatefulMemesDatasetMMSSL(root, metadata, self.img_transform,
                                                     self.augment, self.text_augment, "train", self.tokenizer)
             self.val_dataset = HatefulMemesDatasetMMSSL(root, metadata, self.img_transform, self.augment,

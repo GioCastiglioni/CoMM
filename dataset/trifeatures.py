@@ -85,6 +85,18 @@ class TrifeaturesDataModule(LightningDataModule):
                             transforms.ToTensor(),
                             normalize,
                         ]))
+                elif aug == "crop+flip" or re.match(r"crop\+flip-(\d*\.?\d+)$", aug):
+                    # I-JEPA's augmentation: random resized crop and horizontal flip,
+                    # with none of SimCLR's photometric transforms.
+                    _m = re.match(r"crop\+flip-(\d*\.?\d+)$", aug)
+                    _lo = float(_m[1]) if _m else 0.3
+                    _augment_parsed.append(
+                        transforms.Compose([
+                            transforms.RandomResizedCrop(224, scale=(_lo, 1.0)),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.ToTensor(),
+                            normalize,
+                        ]))
                 elif re.match(r"(crop-(\d*\.?\d+)|crop-to-(\d*\.?\d+))", aug):
                     if re.match(r"crop-to-(\d*\.?\d+)", aug):
                         scale = (0.01, float(re.match(r"crop-to-(\d*\.?\d+)", aug)[1]))
@@ -127,7 +139,7 @@ class TrifeaturesDataModule(LightningDataModule):
                                       augment=self.augment, **kwargs)
             self.val_dataset = dset(root, split="test", transform=self.img_transform,
                                     augment=self.augment, **kwargs)
-        elif self.model == "CoMM" or self.model == "WoMM":
+        elif self.model in ("CoMM", "WoMM", "MMSD"):
             dset = TrifeaturesMMSSL if dataset == "unimodal" else BimodalTrifeaturesMMSSL
             if dataset == "unimodal":
                 kwargs.update(text_augment=(lambda x: x))

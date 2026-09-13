@@ -156,12 +156,12 @@ class CREMADFeaturesDataModule(LightningDataModule):
         self.pooled = pooled
         # Augmentations only make sense for the self-supervised views; the probe
         # must see the features as they are.
-        self.augmentations = augmentations if model in ("CoMM", "WoMM") else None
+        self.augmentations = augmentations if model in ("CoMM", "WoMM", "MMSD") else None
         self.batch_size = batch_size
         self.num_workers = num_workers
 
     def _build(self, split):
-        cls = CREMADFeaturesSSL if self.model in ("CoMM", "WoMM") else CREMADFeatures
+        cls = CREMADFeaturesSSL if self.model in ("CoMM", "WoMM", "MMSD") else CREMADFeatures
         return cls(self.root, split=split, modalities=self.modalities,
                    pooled=self.pooled, augmentations=self.augmentations)
 
