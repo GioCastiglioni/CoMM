@@ -14,6 +14,12 @@ class AlexNetEncoder(AlexNet):
             
         self.classifier = nn.Linear(256 * 6 * 6, latent_dim)
         self.global_pool = global_pool
+        if self.global_pool == "":
+            # `forward` returns the feature map without reaching the classifier, so it
+            # gets no gradient and DDP errors on it. Frozen rather than deleted: deleting
+            # it changes the state_dict and drops the RNG draw this Linear takes at
+            # construction, which would shift every initialisation made afterwards.
+            self.classifier.requires_grad_(False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.global_pool == "avg":
