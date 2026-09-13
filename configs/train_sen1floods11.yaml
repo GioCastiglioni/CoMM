@@ -1,6 +1,10 @@
 seed: 42
 mode: "train"
 
+# Not a CoMM dataset, so no appendix value to follow: it takes Trifeatures' 512-d
+# width, since both modalities use the same AlexNet encoder family.
+embed_dim: 512
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: "auto"

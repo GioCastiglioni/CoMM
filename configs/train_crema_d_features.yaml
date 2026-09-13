@@ -1,13 +1,11 @@
 seed: 42
 mode: "train"
 
-# Fusion width. Wider than MultiBench's 40 because the inputs are wider too:
-# LeVJEPA gives 1024-d video tokens and BYOL-A 512-d audio frames, against
-# 20-371 d in the affect datasets. The encoder *family* is the same (a small
-# Transformer over pre-extracted features, no latent converter), which is what
-# keeps a loss comparison from being a comparison of encoder capacity; set this
-# to 40 for strict MultiBench parity at the cost of a hard squeeze on the input.
-embed_dim: 256
+# Same pipeline as the MultiBench affect sets, but not their 40-d width: the inputs
+# here are LeVJEPA 1024-d and BYOL-A 512-d, so 40 would be a 25x squeeze against the
+# 7.5x the affect text sees. 120 keeps it comparable and stays divisible by 5, so
+# appendix B.1's 5-head / 5-layer block carries over unchanged.
+embed_dim: 120
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -24,7 +22,7 @@ trainer:
 linear_probing:
   _target_: evaluation.linear_probe.LinearProbingCallback
   use_sklearn: false
-  fastsearch: true
+  fastsearch: false
   logging_level: "INFO"
   frequency: "by_epoch"
   every_n_epochs: 1
@@ -34,23 +32,22 @@ optim:
   weight_decay: 1e-2
 
 crema_d_features:
-  # One Transformer per modality, as for the MultiBench affect datasets: 5 layers
-  # and 5 heads, no latent converter, since the encoder already returns a sequence
-  # whose width equals the fusion width.
+  # One Transformer per modality, as in the affect datasets: 5 layers, 5 heads, and
+  # no latent converter, since the encoder already returns a sequence at fusion width.
   encoders:
     - _target_: models.transformer.Transformer
       n_features: 1024   # LeVJEPA embed_dim
       dim: ${embed_dim}
       max_seq_length: 16 # one token per sampled frame
       positional_encoding: false
-      n_heads: 8          # 256 is not divisible by MultiBench's 5 heads
+      n_heads: 5
       n_layers: 5
     - _target_: models.transformer.Transformer
       n_features: 512    # BYOL-A feature_d
       dim: ${embed_dim}
       max_seq_length: 25 # 32000 samples / hop 160 / 2^3 pools
       positional_encoding: false
-      n_heads: 8
+      n_heads: 5
       n_layers: 5
   adapters:
     - null

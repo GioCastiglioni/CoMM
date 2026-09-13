@@ -7,9 +7,8 @@ seed: 42
 
 mode: "train"
 
-# Fusion width for this benchmark. CoMM uses a 40-d embedding space for the
-# affect datasets (5-head/5-layer Transformer per modality, no latent converter),
-# so `model/womm.yaml` reads it from here instead of its 512-d default.
+# Fallback only: appendix B gives a different width per dataset, so each block below
+# declares its own and `main_multibench.py` copies it here before the model is built.
 embed_dim: 40
 
 trainer:
@@ -45,6 +44,9 @@ optim:
 
 # Define encoders/modalities to load MultiBench data
 visionandtouch: # Image + Force to predict proprioception (regression task)
+  # Appendix B.1: ResNet18 with a 128-d output space and a 5-layer causal
+  # convolution network also at 128-d. Both adapters below emit `dim_tokens: 128`.
+  embed_dim: 128
   modalities:
     - "image"
     - "force"
@@ -100,6 +102,8 @@ visionandtouch: # Image + Force to predict proprioception (regression task)
       dim_tokens: 128
 
 visionandtouch-bin: # Image + Proprioception to predict contact (binary task)
+  # Appendix B.1: ResNet18 at 512-d and a 5-layer proprioception MLP at 512-d.
+  embed_dim: 512
   modalities:
     - "image"
     - "proprio"
@@ -154,6 +158,9 @@ visionandtouch-bin: # Image + Proprioception to predict contact (binary task)
 
 
 mimic:
+  # Appendix B.1: feature tokenizer as latent converter with a 512-d embedding
+  # space, no converter for the time-series (the GRU already emits 512-d tokens).
+  embed_dim: 512
   modalities:
       - "tabular"
       - "timeseries"
@@ -180,6 +187,8 @@ mimic:
     - null
 
 mosi:
+  # Appendix B.1: 5-head / 5-layer Transformer per modality, 40-d, no converters.
+  embed_dim: 40
   modalities:
     - "vision"
     - "text"
@@ -189,12 +198,12 @@ mosi:
   encoders:
     - _target_: models.transformer.Transformer
       n_features: 20 # !! according to MultiBench but not in FactorCL
-      dim: 40
+      dim: ${embed_dim}
       max_seq_length: 50
       positional_encoding: false
     - _target_: models.transformer.Transformer
       n_features: 300
-      dim: 40 # !! according to FactorCL paper but not in FactorCL implementation (==600)
+      dim: ${embed_dim} # !! according to FactorCL paper but not in FactorCL implementation (==600)
       max_seq_length: 50
       positional_encoding: false
   adapters: # not required
@@ -202,6 +211,8 @@ mosi:
     - null
 
 humor:
+  # Appendix B.1: 5-head / 5-layer Transformer per modality, 40-d, no converters.
+  embed_dim: 40
   modalities:
     - "vision"
     - "text"
@@ -211,12 +222,12 @@ humor:
   encoders:
     - _target_: models.transformer.Transformer
       n_features: 371
-      dim: 40
+      dim: ${embed_dim}
       max_seq_length: 50
       positional_encoding: false
     - _target_: models.transformer.Transformer
       n_features: 300
-      dim: 40
+      dim: ${embed_dim}
       max_seq_length: 50
       positional_encoding: false
   adapters: # not required
@@ -224,6 +235,8 @@ humor:
     - null
 
 sarcasm:
+  # Appendix B.1: 5-head / 5-layer Transformer per modality, 40-d, no converters.
+  embed_dim: 40
   modalities:
     - "vision"
     - "text"
@@ -233,12 +246,12 @@ sarcasm:
   encoders:
     - _target_: models.transformer.Transformer
       n_features: 371
-      dim: 40
+      dim: ${embed_dim}
       max_seq_length: 50
       positional_encoding: false
     - _target_: models.transformer.Transformer
       n_features: 300
-      dim: 40
+      dim: ${embed_dim}
       max_seq_length: 50
       positional_encoding: false
   adapters: # not required
