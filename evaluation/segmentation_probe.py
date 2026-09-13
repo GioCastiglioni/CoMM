@@ -6,47 +6,50 @@ from pytorch_lightning import Callback, Trainer, LightningModule, LightningDataM
 from typing import List, Optional
 from tqdm import tqdm
 
-class SimpleSegmentationDecoder(nn.Module):
-    def __init__(self, in_channels, num_classes):
+class LinearSegmentationHead(nn.Module):
+    """Dense linear probe: a 1x1 convolution on the frozen feature map, then bilinear
+    upsampling of the *logits* so the loss is taken at full resolution and no label is
+    resampled.
+
+    A 1x1 convolution over the token grid is a linear layer applied per token, so only
+    `D * num_classes + num_classes` parameters train. That is the protocol: the decoder
+    this replaces carried ~2.8M, and measured whether a decoder could recover the labels
+    rather than whether the representation made them linearly available.
+    """
+
+    def __init__(self, in_channels: int, num_classes: int):
         super().__init__()
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, 256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            
-            nn.Conv2d(32, num_classes, kernel_size=1, padding=0)
-        )
-    
+        self.proj = nn.Conv2d(in_channels, num_classes, kernel_size=1)
+
     def forward(self, x, target_size):
-        x = self.decoder(x)
-        x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
-        return x
+        x = self.proj(x)
+        return F.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
+
 
 class SegmentationProbingCallback(Callback):
     def __init__(self, downstream_data_modules: List[LightningDataModule],
                  names: Optional[List[str]] = None,
                  epochs: int = 10,
                  lr: float = 1e-3,
+                 weight_decay: float = 0.0,
                  num_classes: int = 2,
                  ignore_index: int = -1,
                  every_n_epochs: int = 5,
+                 fuse_modalities: str = "concat",
                  **extraction_kwargs):
         self.downstream_data_modules = downstream_data_modules
         self.names = names
         self.epochs = epochs
         self.lr = lr
+        self.weight_decay = weight_decay
+        # With `return_tokens=True` there is one token grid per stream and no fused
+        # vector per spatial position, so the probe has to combine them itself.
+        # 'concat' leaves the weighting to the linear layer and contains 'mean' as a
+        # special case; 'mean' would cancel complementary components between streams,
+        # destroying exactly the unique and synergistic content being measured.
+        if fuse_modalities not in ("mean", "concat"):
+            raise ValueError(f"fuse_modalities must be 'mean' or 'concat', got {fuse_modalities!r}")
+        self.fuse_modalities = fuse_modalities
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.every_n_epochs = every_n_epochs
@@ -65,10 +68,24 @@ class SegmentationProbingCallback(Callback):
                 pl_module.log(f"Probe/{dataset_name}_mAcc", self.last_metrics.get(f"Probe/{dataset_name}_mAcc", 0.0), sync_dist=True)
                 pl_module.log(f"Probe/{dataset_name}_mIoU", self.last_metrics.get(f"Probe/{dataset_name}_mIoU", 0.0), sync_dist=True)
             
+    def _to_grid(self, features, L_spatial, H):
+        """(B, L_total, D) tokens -> (B, C, H, H) feature map."""
+        B, L, D = features.shape
+        if L > L_spatial:
+            n_mods = L // L_spatial
+            features = features.view(B, n_mods, L_spatial, D)
+            features = (features.mean(dim=1) if self.fuse_modalities == "mean"
+                        else features.permute(0, 2, 1, 3).reshape(B, L_spatial, n_mods * D))
+        return features.transpose(1, 2).reshape(B, -1, H, H)
+
     def segmentation_probing(self, trainer: Trainer, pl_module: LightningModule):
         if trainer.global_rank == 0:
             device = pl_module.device
             
+            # This probe does not go through `extract_features`, so the choice of
+            # network is made here too. CoMM and WoMM expose no `probe_encoder`.
+            encoder = getattr(pl_module, "probe_encoder", pl_module.encoder)
+
             for downstream_data_mod, dataset_name in zip(self.downstream_data_modules, self.names):
                 train_loader = downstream_data_mod.train_dataloader()
                 val_loader = downstream_data_mod.val_dataloader()
@@ -76,7 +93,7 @@ class SegmentationProbingCallback(Callback):
                 with torch.no_grad():
                     sample_x, sample_y = next(iter(train_loader))
                     sample_x = [x.to(device) for x in sample_x]
-                    sample_feat = pl_module.encoder(sample_x, **self.extraction_kwargs, return_tokens=True)
+                    sample_feat = encoder(sample_x, **self.extraction_kwargs, return_tokens=True)
                     if isinstance(sample_feat, list):
                         sample_feat = sample_feat[0]
                 
@@ -85,16 +102,24 @@ class SegmentationProbingCallback(Callback):
                 if mask_mod is not None:
                     num_mods_active = sum(mask_mod[0]) if isinstance(mask_mod[0], list) else sum(mask_mod)
                 else:
-                    num_mods_active = pl_module.encoder.num_modalities
+                    num_mods_active = encoder.num_modalities
                 
                 # sample_feat is (B, L_total, D). We assume spatial is square per modality.
                 B, L_total, D = sample_feat.shape
                 L_spatial = L_total // num_mods_active
-                H = int(np.sqrt(L_spatial))
+                H = int(round(np.sqrt(L_spatial)))
+                if H * H != L_spatial:
+                    raise ValueError(
+                        f"{dataset_name}: {L_total} tokens over {num_mods_active} modalities "
+                        f"gives {L_spatial} per modality, which is not a square grid. The "
+                        f"probe reshapes tokens to (H, H) and cannot infer a non-square one.")
                 in_channels = D
                 
-                decoder = SimpleSegmentationDecoder(in_channels, self.num_classes).to(device)
-                optimizer = torch.optim.Adam(decoder.parameters(), lr=self.lr)
+                probe_channels = (in_channels * num_mods_active
+                                  if self.fuse_modalities == "concat" else in_channels)
+                decoder = LinearSegmentationHead(probe_channels, self.num_classes).to(device)
+                optimizer = torch.optim.Adam(decoder.parameters(), lr=self.lr,
+                                             weight_decay=self.weight_decay)
                 criterion = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
                 
                 # Train Loop
@@ -107,17 +132,12 @@ class SegmentationProbingCallback(Callback):
                             y_batch = y_batch.to(device)
                             
                             with torch.no_grad():
-                                features = pl_module.encoder(X_batch, **self.extraction_kwargs, return_tokens=True)
+                                features = encoder(X_batch, **self.extraction_kwargs, return_tokens=True)
                                 if isinstance(features, list):
                                     features = features[0]
                         
                             # Handle concatenated modalities from MMFusion
-                            B_feat, L_feat, D_feat = features.shape
-                            if L_feat > L_spatial:
-                                num_mods = L_feat // L_spatial
-                                features = features.view(B_feat, num_mods, L_spatial, D_feat).mean(dim=1)
-                            
-                            features = features.transpose(1, 2).reshape(-1, in_channels, H, H)
+                            features = self._to_grid(features, L_spatial, H)
                             
                             optimizer.zero_grad()
                             preds = decoder(features, y_batch.shape[-2:])
@@ -138,17 +158,12 @@ class SegmentationProbingCallback(Callback):
                         X_batch = [x.to(device) for x in X_batch]
                         y_batch = y_batch.to(device)
                         
-                        features = pl_module.encoder(X_batch, **self.extraction_kwargs, return_tokens=True)
+                        features = encoder(X_batch, **self.extraction_kwargs, return_tokens=True)
                         if isinstance(features, list):
                             features = features[0]
                             
                         # Handle concatenated modalities from MMFusion
-                        B_feat, L_feat, D_feat = features.shape
-                        if L_feat > L_spatial:
-                            num_mods = L_feat // L_spatial
-                            features = features.view(B_feat, num_mods, L_spatial, D_feat).mean(dim=1)
-                            
-                        features = features.transpose(1, 2).reshape(-1, in_channels, H, H)
+                        features = self._to_grid(features, L_spatial, H)
                         
                         preds = decoder(features, y_batch.shape[-2:])
                         pred_labels = preds.argmax(dim=1)
