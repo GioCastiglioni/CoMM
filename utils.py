@@ -524,6 +524,10 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     assert len(schedule) == epochs * niter_per_ep
     return schedule
 
+# Every run of the study reports here; the dataset is a tag, not a project.
+WANDB_PROJECT = "WoMM"
+
+
 @dataclass
 class RunIdentity:
     """Identifiers of one experiment cell, shared by every W&B run it produces."""
@@ -540,20 +544,24 @@ class RunIdentity:
 
 
 def build_run_identity(cfg: DictConfig,
+                       dataset: str,
                        stage: str = "pretrain",
                        task: Optional[str] = None,
+                       arm: Optional[str] = None,
                        extra: Optional[Dict[str, Any]] = None,
                        group_suffix: Optional[str] = None) -> RunIdentity:
     """Build the W&B identity (name, tags, group, config) of a run.
 
-    Pre-training and fine-tuning live in different W&B projects, so each run is
-    initialised separately; calling this with the same `cfg` yields the same
-    filter keys on both sides. Tags are `key:value` strings (filterable in the
-    runs table with `tags`), while `config["exp"]` holds the same fields typed,
-    for numeric filters, grouping and column sorting (`exp.seed`, ...).
+    Every run of the study reports into the single project `WANDB_PROJECT`, so the
+    dataset is what separates a cell from its twin on another benchmark: it is
+    required, it leads the name and the group, and it is always a tag. Tags are
+    `key:value` strings (filterable in the runs table with `tags`), while
+    `config["exp"]` holds the same fields typed, for numeric filters, grouping and
+    column sorting (`exp.seed`, ...).
 
-    `extra` adds dataset-specific axes to the tags and the typed config;
-    `group_suffix` also puts one in the group and the run name.
+    `arm` names a within-dataset split that is not a different cell -- Trifeatures'
+    biased/unbiased pair. `extra` adds dataset-specific axes to the tags and the
+    typed config; `group_suffix` marks a variant of the pipeline itself.
     """
     lk = getattr(cfg.model.model, "loss_kwargs", None)
     seed = int(cfg.seed)
@@ -569,20 +577,54 @@ def build_run_identity(cfg: DictConfig,
     kappa_mode = str(getattr(lk, "geco_kappa_mode", "none")) if lk is not None else "none"
     gap_frac = getattr(lk, "geco_kappa_gap_frac", None) if lk is not None else None
 
+    # The self-distillation family has its own axes: the objective replaces the
+    # reconstruction/regularization pair, and the augmentation is a real axis there
+    # because the I-JEPA cell is meant to run with its own. Without them every MMSD
+    # cell would be named `MMSD_<arm>_s<seed>` and they would be indistinguishable.
+    objective = str(getattr(lk, "objective", "")) if lk is not None else ""
+    has_sd_axes = bool(objective)
+    aug = None
+    if has_sd_axes:
+        try:
+            aug_cfg = cfg.data.data_module.augment
+            aug = "-".join("none" if a is None else str(a) for a in aug_cfg) \
+                if aug_cfg is not None else "default"
+        except Exception:
+            aug = "default"
+
+    model = str(cfg.model.name)
+    family = {"WoMM": "womm", "MMSD": "mmsd"}.get(model, "baseline")
+
+    # One slug per experimental cell, so 360 runs can be grouped by cell in one
+    # click regardless of dataset, arm or seed.
+    if has_loss_axes:
+        cell = f"{rec}-{reg}-{reg_weight}"
+    elif has_sd_axes:
+        cell = f"mm-{objective}"
+    else:
+        cell = model.lower()
+
     geco_tag = (
         f"_geco-{kappa_mode}-gap{gap_frac}"
         f"-w{lk.geco_warmup_frac}-h{lk.geco_ema_halflife_epochs}"
         if use_geco else "_fixedlbd"
     )
     # Seed excluded from the group so all seeds of a cell aggregate together.
-    group = str(cfg.model.name)
+    group = f"{dataset}_{model}"
     if has_loss_axes:
         group += f"_{rec}_{reg}_{reg_weight}" + ("_sg" if stop_grad else "") + geco_tag
+    elif has_sd_axes:
+        group += f"_{objective}_aug-{aug}"
+    if arm:
+        group += f"_{arm}"
     if group_suffix:
         group += f"_{group_suffix}"
 
     tags = [
-        f"model:{cfg.model.name}",
+        f"dataset:{dataset}",
+        f"family:{family}",
+        f"cell:{cell}",
+        f"model:{model}",
         f"stage:{stage}",
         f"rec:{rec}",
         f"reg:{reg}",
@@ -592,6 +634,10 @@ def build_run_identity(cfg: DictConfig,
         f"gap:{gap_frac}",
         f"seed:{seed}",
     ]
+    if arm:
+        tags.append(f"arm:{arm}")
+    if has_sd_axes:
+        tags += [f"objective:{objective}", f"augment:{aug}"]
     if stop_grad:
         tags.append("stop_grad")
     if task is not None:
@@ -600,7 +646,11 @@ def build_run_identity(cfg: DictConfig,
         tags.append(f"{k}:{v}")
 
     config = {"exp": {
-        "model": str(cfg.model.name),
+        "dataset": dataset,
+        "family": family,
+        "cell": cell,
+        "arm": arm,
+        "model": model,
         "stage": stage,
         "task": task or "pretrain",
         "reconstruction": rec,
@@ -611,6 +661,8 @@ def build_run_identity(cfg: DictConfig,
         "kappa_gap_frac": float(gap_frac) if gap_frac is not None else None,
         "seed": seed,
         "stop_grad": stop_grad,
+        "objective": objective or None,
+        "augment": aug,
         "group": group,
         **(extra or {}),
     }}
