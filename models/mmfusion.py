@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from collections.abc import Sequence
-from typing import List, Optional, Union
+from collections.abc import Sequence as ABCSequence
+from typing import List, Optional, Union, Sequence
 from einops import repeat
 from collections import OrderedDict
 # Local import
@@ -227,7 +227,9 @@ class MMFusion(nn.Module):
 
     def forward(self, x: List[torch.Tensor],
                 mask_modalities: Optional[Union[List[bool], List[List[bool]]]] = None,
-                return_tokens: bool = False):
+                return_tokens: bool = False,
+                token_keep: Optional[Sequence[Optional[torch.Tensor]]] = None,
+                return_token_lengths: bool = False):
         """
         :param x: List of tensors
         :param mask_modalities: Mask indicating which modalities are given.
@@ -235,13 +237,20 @@ class MMFusion(nn.Module):
             If a list of lists is given, assume `x` has all modalities and computes
             a list of output by masking out modalitites according to `mask_modalities`.
         :param return_tokens: if True, return the unpooled sequence of tokens.
+        :param token_keep: one index tensor per modality selecting which of its tokens
+            reach the fusion transformer, or None to keep all. Shared across the batch
+            so the token tensors stay rectangular.
+        :param return_token_lengths: if True, also return the per-modality token counts
+            measured before `token_keep` is applied. They are needed to address a target
+            token as (modality, position) and they vary per batch for padded sequences,
+            so they are returned from this pass rather than recomputed in another.
         :return: a latent vector z or list of vector if `mask_modalities` is a list of list.
         """
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
-                and isinstance(mask_modalities[0], Sequence):
+        elif isinstance(mask_modalities, ABCSequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], ABCSequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
 
@@ -272,6 +281,16 @@ class MMFusion(nn.Module):
                          for (adapter, zi) in zip(input_adapters, z)]
         attn_mask = [attn_mask_ if attn_mask_ is not None else torch.zeros_like(zi[:,:,0]).bool()
                      for (attn_mask_, zi) in zip(attn_mask, latent_tokens)]
+        token_lengths = [zi.shape[1] for zi in latent_tokens]
+
+        if token_keep is not None:
+            if len(token_keep) != len(latent_tokens):
+                raise ValueError(f"`token_keep` has {len(token_keep)} entries for "
+                                 f"{len(latent_tokens)} modalities")
+            latent_tokens = [zi if k is None else zi.index_select(1, k.to(zi.device))
+                             for (zi, k) in zip(latent_tokens, token_keep)]
+            attn_mask = [a if k is None else a.index_select(1, k.to(a.device))
+                         for (a, k) in zip(attn_mask, token_keep)]
         if list_mask_mod is None:
             # 3. FusionTransformer forward pass
             z = self.fusion_transformer(latent_tokens, key_padding_mask=attn_mask, return_tokens=return_tokens)
@@ -283,6 +302,8 @@ class MMFusion(nn.Module):
                 attn_mask_ = [attn for (attn, m) in zip(attn_mask, mask_mod) if m]
                 # 3. FusionTransformer forward pass
                 z.append(self.fusion_transformer(latent_tokens_, return_tokens=return_tokens))
+        if return_token_lengths:
+            return z, token_lengths
         return z
 
     def encode_single_mod(self, x: torch.Tensor, mod: int):
@@ -313,8 +334,8 @@ class LinearFusion(nn.Module):
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
-                and isinstance(mask_modalities[0], Sequence):
+        elif isinstance(mask_modalities, ABCSequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], ABCSequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
         assert len(mask_modalities) == self.num_modalities, (
@@ -364,8 +385,8 @@ class MLPFusion(nn.Module):
         list_mask_mod = None
         if mask_modalities is None:
             mask_modalities = self.num_modalities * [True]
-        elif isinstance(mask_modalities, Sequence) and len(mask_modalities) > 0 \
-                and isinstance(mask_modalities[0], Sequence):
+        elif isinstance(mask_modalities, ABCSequence) and len(mask_modalities) > 0 \
+                and isinstance(mask_modalities[0], ABCSequence):
             list_mask_mod = mask_modalities
             mask_modalities = self.num_modalities * [True]
         assert len(mask_modalities) == self.num_modalities, (
