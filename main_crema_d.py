@@ -12,7 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from evaluation.linear_probe import LinearProbingCallback
 from pytorch_lightning.callbacks import ModelCheckpoint
-from utils import setup_results_dir, build_run_identity
+from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.overrides")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
@@ -30,7 +30,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     kwargs = dict()
 
-    if cfg.model.name== "CoMM" or cfg.model.name== "WoMM":
+    if cfg.model.name in ("CoMM", "WoMM", "MMSD"):
         kwargs["encoder"] = {
             "encoders": instantiate(cfg.model.encoders),
             "input_adapters": instantiate(cfg.model.adapters)}
@@ -67,7 +67,7 @@ def main(cfg: DictConfig):
                                
     # The probe only logs acc1_* on the epochs it runs, so the checkpoints that
     # monitor those keys must share its cadence: both gate on (current_epoch + 1) % n.
-    probe_every_n_epochs = 5
+    probe_every_n_epochs = 1
 
     callbacks = [LinearProbingCallback([d_mod],
                                        names=[name],
@@ -77,7 +77,7 @@ def main(cfg: DictConfig):
                                        every_n_epochs=probe_every_n_epochs)
                  for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list)]
 
-    identity = build_run_identity(cfg, stage="pretrain")
+    identity = build_run_identity(cfg, dataset="crema_d", stage="pretrain")
     run_name = identity.name
 
     results_dir = setup_results_dir(cfg, run_name)
@@ -99,7 +99,7 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
-            WandbLogger(project="CREMA-D",
+            WandbLogger(project=WANDB_PROJECT,
                         name=run_name,
                         save_dir=results_dir,
                         **identity.wandb_kwargs())],
@@ -114,77 +114,6 @@ def main(cfg: DictConfig):
 
     trainer.test(model, datamodule=data_module, ckpt_path=ckpt_path)
     wandb.finish()
-
-    print("Starting fine-tuning stage...")
-    from pl_modules.classification_finetuner import ClassificationFineTuner
-    
-    class CustomFinetuningCallback(pl.Callback):
-        def __init__(self, unfreeze_at_epoch=5, unfreeze_lr=3e-4):
-            self.unfreeze_at_epoch = unfreeze_at_epoch
-            self.unfreeze_lr = unfreeze_lr
-
-        def on_fit_start(self, trainer, pl_module):
-            for param in pl_module.encoder.parameters():
-                param.requires_grad = False
-                
-        def on_train_epoch_start(self, trainer, pl_module):
-            if trainer.current_epoch == self.unfreeze_at_epoch:
-                print(f"Unfreezing encoder at epoch {trainer.current_epoch}")
-                for param in pl_module.encoder.parameters():
-                    param.requires_grad = True
-                for opt in trainer.optimizers:
-                    for param_group in opt.param_groups:
-                        param_group['lr'] = self.unfreeze_lr
-
-    best_ckpt_paths = {name: cb.best_model_path if cfg.mode == "train" else ckpt_path for name, cb in checkpoint_callbacks.items()}
-    
-    for d_mod, name, mask in zip(downstream_data_modules, downstream_names, mask_modalities_list):
-        best_ckpt_path = best_ckpt_paths[name]
-        if not best_ckpt_path or not os.path.exists(best_ckpt_path):
-            print(f"No valid checkpoint found for fine-tuning {name}!")
-            continue
-            
-        print(f"Fine-tuning for {name}...")
-        
-        best_model = instantiate(cfg.model.model, optim_kwargs=cfg.optim, **kwargs)
-        state_dict = torch.load(best_ckpt_path, map_location='cpu')["state_dict"]
-        best_model.load_state_dict(state_dict)
-        encoder = best_model.encoder
-        
-        unfreeze_lr = cfg.optim.lr
-        finetuner = ClassificationFineTuner(
-            encoder=encoder,
-            learning_rate=1e-3, 
-            num_classes=6,
-            mask_modalities=mask
-        )
-        
-        ft_results_dir = os.path.join(results_dir, f"finetune_{name}")
-        
-        ft_checkpoint_callback = ModelCheckpoint(
-            monitor="val/acc",
-            mode="max",
-            save_top_k=1,
-            filename=f"best-finetuned-{name}",
-            dirpath=ft_results_dir
-        )
-        
-        ft_callbacks = [CustomFinetuningCallback(unfreeze_at_epoch=5, unfreeze_lr=unfreeze_lr), ft_checkpoint_callback]
-        
-        ft_identity = build_run_identity(cfg, stage="finetune", task=name)
-
-        ft_trainer = instantiate(
-            cfg.trainer,
-            default_root_dir=ft_results_dir,
-            max_epochs=55,
-            logger=[WandbLogger(project="CREMA-D_Finetune", name=f"Finetune_{name}_{run_name}", save_dir=ft_results_dir,
-                                **ft_identity.wandb_kwargs())],
-            callbacks=ft_callbacks
-        )
-        
-        ft_trainer.fit(finetuner, datamodule=d_mod)
-        ft_trainer.test(finetuner, datamodule=d_mod, ckpt_path="best")
-        wandb.finish()
 
 
 if __name__ == '__main__':
