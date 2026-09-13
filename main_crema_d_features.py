@@ -10,7 +10,7 @@ import torch.utils.data.distributed
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from utils import setup_results_dir, build_run_identity
+from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
 
 
 # Video + audio, so the joint mask keeps the name `both` as in the other bimodal
@@ -37,7 +37,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     dataset = "crema_d_features"
     kwargs = dict()
-    if cfg.model.name == "CoMM" or cfg.model.name == "WoMM":
+    if cfg.model.name in ("CoMM", "WoMM", "MMSD"):
         kwargs["encoder"] = {
             "encoders": instantiate(cfg[dataset]["encoders"]),
             "input_adapters": instantiate(cfg[dataset]["adapters"])}
@@ -66,9 +66,7 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
-    identity = build_run_identity(cfg, stage="pretrain",
-                                  extra={"dataset": dataset},
-                                  group_suffix="cremadfeat")
+    identity = build_run_identity(cfg, dataset=dataset, stage="pretrain")
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
@@ -77,7 +75,7 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
-            WandbLogger(project="CREMA-D-features",
+            WandbLogger(project=WANDB_PROJECT,
                         name=run_name,
                         save_dir=results_dir,
                         **wandb_resume,

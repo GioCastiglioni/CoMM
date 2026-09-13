@@ -12,7 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from dataset.trifeatures import BimodalTrifeatures
 from evaluation.linear_probe import LinearProbingCallback
-from utils import setup_results_dir, build_run_identity
+from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
 
 
 @hydra.main(version_base=None, config_name="train_trifeatures", config_path="./configs")
@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     kwargs = dict()
 
-    if cfg.model.name== "CoMM" or cfg.model.name== "WoMM":
+    if cfg.model.name in ("CoMM", "WoMM", "MMSD"):
         kwargs["encoder"] = {
             "encoders": instantiate(cfg.model.encoders),
             "input_adapters": instantiate(cfg.model.adapters)}
@@ -68,6 +68,9 @@ def main(cfg: DictConfig):
     # Each task is also probed from one modality at a time: a unique attribute must
     # be readable from its own modality only, and synergy from neither alone.
     probe_masks = {"both": [True, True], "mod1": [True, False], "mod2": [False, True]}
+    # `fastsearch` is left at the upstream default of False: a coarse cost sweep can
+    # pick a cost that crushes the probe into predicting the majority class, which
+    # reports exactly 50.0 on a balanced binary task.
     # There is no fine-tuning stage here: these accuracies are the result.
     probe_every_n_epochs = 1
 
@@ -76,7 +79,6 @@ def main(cfg: DictConfig):
                                        val_loaders=False,
                                        mask_modalities=[mask],
                                        split_label_columns=True,
-                                       fastsearch=True,
                                        every_n_epochs=probe_every_n_epochs)
                  for m, mask in probe_masks.items()]
 
@@ -86,9 +88,8 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
-    identity = build_run_identity(cfg, stage="pretrain",
-                                  extra={"biased": biased},
-                                  group_suffix="biased" if biased else "unbiased")
+    identity = build_run_identity(cfg, dataset="trifeatures", stage="pretrain",
+                                  arm="biased" if biased else "unbiased")
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
@@ -97,7 +98,7 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
-            WandbLogger(project="Trifeatures",
+            WandbLogger(project=WANDB_PROJECT,
                         name=run_name,
                         save_dir=results_dir,
                         **wandb_resume,

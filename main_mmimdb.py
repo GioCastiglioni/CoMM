@@ -11,7 +11,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from utils import setup_results_dir, build_run_identity
+from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
 
 
 # Image + text, so the joint mask keeps the name `both` as in the other bimodal
@@ -38,7 +38,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     dataset = "mmimdb"
     model_kwargs = dict()
-    if cfg.model.name == "CoMM" or cfg.model.name == "WoMM":  # encoders + adapters for MMFusion
+    if cfg.model.name in ("CoMM", "WoMM", "MMSD"):  # encoders + adapters for MMFusion
         encoders = instantiate(cfg[dataset]["encoders"])  # encoders specific to each dataset
         adapters = instantiate(cfg[dataset]["adapters"])  # adapters also specific
         model_kwargs = dict(encoder=dict(encoders=encoders, input_adapters=adapters))
@@ -71,9 +71,7 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
-    identity = build_run_identity(cfg, stage="pretrain",
-                                  extra={"dataset": dataset},
-                                  group_suffix=dataset)
+    identity = build_run_identity(cfg, dataset=dataset, stage="pretrain")
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
@@ -82,7 +80,7 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
-            WandbLogger(project="MM-IMDb",
+            WandbLogger(project=WANDB_PROJECT,
                         name=run_name,
                         save_dir=results_dir,
                         **wandb_resume,

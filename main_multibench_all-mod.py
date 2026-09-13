@@ -10,7 +10,7 @@ import torch.utils.data.distributed
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from utils import setup_results_dir, build_run_identity
+from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
 from main_multibench import modality_masks
 
 
@@ -30,7 +30,7 @@ def main(cfg: DictConfig):
     # create model + save hyper-parameters
     dataset = cfg.data.data_module.dataset # Which MultiBench dataset to load
     kwargs = dict()
-    if cfg.model.name == "CoMM" or cfg.model.name == "WoMM":
+    if cfg.model.name in ("CoMM", "WoMM", "MMSD"):
         encoders = instantiate(cfg[dataset]["encoders"]) # encoders specific to each dataset
         adapters = instantiate(cfg[dataset]["adapters"]) # adapters also specific
         kwargs["encoder"] = {
@@ -75,10 +75,9 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
-    identity = build_run_identity(cfg, stage="pretrain",
-                                  extra={"dataset": dataset,
-                                         "n_modalities": len(modalities)},
-                                  group_suffix=f"{dataset}_allmod")
+    identity = build_run_identity(cfg, dataset=dataset, stage="pretrain",
+                                  extra={"n_modalities": len(modalities)},
+                                  group_suffix="allmod")
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
@@ -87,7 +86,7 @@ def main(cfg: DictConfig):
         cfg.trainer,
         default_root_dir=results_dir,
         logger=[
-            WandbLogger(project="MultiBench",
+            WandbLogger(project=WANDB_PROJECT,
                         name=run_name,
                         save_dir=results_dir,
                         **wandb_resume,
