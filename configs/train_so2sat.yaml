@@ -1,0 +1,52 @@
+seed: 42
+mode: "train"
+
+# AlexNet family, so Trifeatures' and Sen1Floods11's width.
+embed_dim: 512
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: "auto"
+  strategy: "ddp"
+  devices: "auto"
+  num_nodes: 1
+  max_epochs: 100
+  default_root_dir: "."
+  use_distributed_sampler: false
+  deterministic: false
+  inference_mode: false # avoid weird bugs during linear probing
+
+linear_probing:
+  _target_: evaluation.linear_probe.LinearProbingCallback
+  use_sklearn: false
+  fastsearch: false
+  logging_level: "INFO"
+  frequency: "by_epoch"
+  every_n_epochs: 1
+
+optim:
+  lr: 3e-4
+  weight_decay: 1e-4
+
+model:
+  encoders:
+    - _target_: models.alexnet_multispectral.AlexNetMultispectralEncoder
+      in_channels: 2      # Sentinel-1: VV, VH
+      global_pool: ""
+    - _target_: models.alexnet_multispectral.AlexNetMultispectralEncoder
+      in_channels: 10     # Sentinel-2: B02..B12
+      global_pool: ""
+
+  adapters:
+    - _target_: models.input_adapters.PatchedInputAdapter
+      num_channels: 256
+      stride_level: 1
+      patch_size_full: 1
+      dim_tokens: ${model.model.encoder.embed_dim}
+      image_size: 6
+    - _target_: models.input_adapters.PatchedInputAdapter
+      num_channels: 256
+      stride_level: 1
+      patch_size_full: 1
+      dim_tokens: ${model.model.encoder.embed_dim}
+      image_size: 6
