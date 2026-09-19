@@ -26,6 +26,7 @@ from models.mmfusion import MMFusion
 from models.selfdistill import (BYOLPredictor, DINOHead, JEPAPredictor,
                                 sample_ijepa_masks)
 from pl_modules.base import BaseModel
+from utils import LinearWarmupCosineAnnealingLR, set_weight_decay_per_param
 
 
 class MMSD(BaseModel):
@@ -38,7 +39,10 @@ class MMSD(BaseModel):
                  ema_final: float = 1.0,
                  predictor_kwargs: Optional[Dict] = None,
                  mask_kwargs: Optional[Dict] = None,
-                 cross_view: Optional[bool] = None):
+                 cross_view: Optional[bool] = None,
+                 lr_warmup_frac: float = 0.1,
+                 wd_mult_end: Optional[float] = 10.0,
+                 freeze_last_layer_epochs: int = 1):
         """
         Args:
             encoder: multimodal fusion encoder (the online / student network).
@@ -54,6 +58,15 @@ class MMSD(BaseModel):
                 True for BYOL and DINO, which are two-view methods, and False for
                 I-JEPA, whose target encoder sees the *same* image as the context
                 encoder and derives all of its asymmetry from masking.
+            lr_warmup_frac: fraction of `max_epochs` spent linearly warming the
+                learning rate up to the value the train config sets, after which it
+                is cosine-annealed. The peak is unchanged.
+            wd_mult_end: weight decay is cosine-ramped from `optim_kwargs`'s value to
+                that value times this factor. DINO's 0.04 -> 0.4 is a 10x rise; the
+                factor transfers across architectures where the absolutes do not.
+                None keeps weight decay flat.
+            freeze_last_layer_epochs: epochs during which the DINO prototype layer
+                receives no gradient. Ignored by the other objectives.
         """
         super(MMSD, self).__init__(optim_kwargs)
 
@@ -104,6 +117,53 @@ class MMSD(BaseModel):
         self.ema_base = ema_base
         self.ema_final = ema_final
         self._ema_now = ema_base
+
+        self.lr_warmup_frac = lr_warmup_frac
+        self.wd_mult_end = wd_mult_end
+        self.freeze_last_layer_epochs = freeze_last_layer_epochs
+
+    def configure_optimizers(self):
+        """Warmup + cosine on top of the train config's learning rate, which stays the peak."""
+        optimizer = torch.optim.AdamW(
+            set_weight_decay_per_param(self, weight_decay=self.optim_kwargs["weight_decay"]),
+            lr=self.optim_kwargs["lr"])
+        max_epochs = self.trainer.max_epochs
+        warmup = max(1, int(round(max_epochs * self.lr_warmup_frac)))
+        scheduler = LinearWarmupCosineAnnealingLR(
+            optimizer, warmup_epochs=warmup, max_epochs=max_epochs,
+            warmup_start_lr=self.optim_kwargs["lr"] * 1e-3, eta_min=0.0)
+        return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
+
+    def _set_weight_decay(self):
+        """Cosine ramp of weight decay, applied only to the decayed parameter group.
+
+        `set_weight_decay_per_param` puts biases and norms in a second group at 0,
+        which must stay at 0.
+        """
+        if self.wd_mult_end is None:
+            return
+        wd_start = self.optim_kwargs["weight_decay"]
+        wd_end = wd_start * self.wd_mult_end
+        denom = max(1, self.trainer.max_epochs - 1)
+        t = min(1.0, self.current_epoch / denom)
+        wd = wd_end + 0.5 * (wd_start - wd_end) * (1 + math.cos(math.pi * t))
+        for opt in self.trainer.optimizers:
+            for group in opt.param_groups:
+                if group.get("weight_decay", 0) > 0:
+                    group["weight_decay"] = wd
+        self.log("optim/weight_decay", wd, on_step=False, on_epoch=True)
+
+    def on_train_epoch_start(self):
+        super().on_train_epoch_start()
+        self._set_weight_decay()
+
+    def on_after_backward(self):
+        """DINO's freeze_last_layer: the prototype layer gets no gradient early on."""
+        if self.objective != "dino" or self.current_epoch >= self.freeze_last_layer_epochs:
+            return
+        for param in self.head.proto.last_layer.parameters():
+            if param.grad is not None:
+                param.grad.zero_()
 
     @staticmethod
     def _head_out_dim(projection: nn.Module) -> int:

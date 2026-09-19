@@ -2,10 +2,10 @@ name: MMSD
 
 model:
   _target_: pl_modules.mmsd.MMSD
-  encoder: # student / online network; the teacher is an EMA copy of it
+  encoder:
     _target_: models.mmfusion.MMFusion
     embed_dim: ${oc.select:embed_dim,512}
-    fusion: "concat"    # 'x-attn' does not construct in this repo, see FusionTransformer.initialize
+    fusion: "concat"    # 'x-attn' does not construct in this repo
     pool: "cls"
     n_heads: 8
     n_layers: 1
@@ -20,37 +20,34 @@ model:
 
   loss_kwargs:
     objective: "dino"              # 'dino' | 'jepa'
-    weights: null                  # per-mask weights, null = uniform over the M+1 masks
+    weights: null                  # per-mask weights; null = uniform
     # dino only
     student_temp: 0.1
     teacher_temp: 0.07
     warmup_teacher_temp: 0.04
-    warmup_teacher_temp_frac: 0.3  # fraction of max_epochs spent warming the teacher temp
+    warmup_teacher_temp_frac: 0.3
     center_momentum: 0.9
-    out_dim: 2048                  # prototypes; shrink this for narrow embeddings (40-d MultiBench)
+    out_dim: 2048                  # prototypes; shrink for narrow embeddings
     # jepa only
     huber_delta: 1.0
 
-  # teacher momentum, cosine-ramped from base to final over the whole run
   ema_base: 0.996
   ema_final: 1.0
 
-  # Empty by default because the keys differ per objective, so adding one from the
-  # command line needs Hydra's append form: +model.model.predictor_kwargs.depth=3
-  #   byol: {hidden_dim}
-  #   dino: {hidden_dim, bottleneck_dim, n_layers}
-  #   jepa: {depth, n_heads, max_len, per_modality}  -- max_len defaults to 512,
-  #         which already covers the 36 (trifeatures) and 50 (MultiBench) token grids
+  # Self-distillation schedules; the WoMM cells have none of these.
+  lr_warmup_frac: 0.1
+  wd_mult_end: 10.0                # multiplies optim.weight_decay; null keeps it flat
+  freeze_last_layer_epochs: 1      # dino only
+
+  # Keys differ per objective, so setting one needs Hydra's append form:
+  #   +model.model.predictor_kwargs.depth=3
   predictor_kwargs: {}
 
-  # Matched against the student of view 1-v (BYOL, DINO) or view v (I-JEPA, whose
-  # target encoder reads the same image as the context encoder). null = per-objective
-  # default, which is what each original method does.
-  cross_view: null
+  cross_view: null                 # null = each objective's own default
 
-  mask_kwargs:                     # jepa only; ignored by byol and dino
+  mask_kwargs:                     # jepa only
     mode: "block"                  # 'block' on a square token grid, 'span' otherwise
-    n_targets: 4                   # I-JEPA's 4 target blocks, each predicted separately
-    target_scale: [0.15, 0.20]     # I-JEPA's original ratios
+    n_targets: 4
+    target_scale: [0.15, 0.20]
     target_aspect: [0.75, 1.50]
-    context_scale: [0.85, 1.00]    # every target patch is then removed from it
+    context_scale: [0.85, 1.00]
