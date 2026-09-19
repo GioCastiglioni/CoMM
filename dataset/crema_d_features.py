@@ -114,10 +114,11 @@ class CREMADFeatures(Dataset):
 
 
 class CREMADFeaturesSSL(CREMADFeatures):
-    """Two augmented views per item, for the contrastive objectives.
+    """Two augmented views per item, for the self-supervised objectives.
 
-    Returns `[[view1_mod1, view1_mod2], [view2_mod1, view2_mod2]], label`, the
-    shape WoMM's `forward` expects from the other multimodal datasets.
+    Returns `(view1, view2)` with no label, matching `MultiBenchSSL`: `training_step`
+    calls `forward(*batch)`, so any third element shifts the views into the wrong
+    arguments instead of raising.
     """
 
     def __getitem__(self, i):
@@ -130,7 +131,7 @@ class CREMADFeaturesSSL(CREMADFeatures):
                     x = x.unsqueeze(0)
                 v.append(self._augment(x, aug))
             views.append(v)
-        return views, torch.tensor(int(self.labels[i]), dtype=torch.long)
+        return views[0], views[1]
 
 
 class CREMADFeaturesDataModule(LightningDataModule):
@@ -159,6 +160,9 @@ class CREMADFeaturesDataModule(LightningDataModule):
         self.augmentations = augmentations if model in ("CoMM", "WoMM", "MMSD") else None
         self.batch_size = batch_size
         self.num_workers = num_workers
+        # The probe callbacks hold a data module that is never handed to a Trainer,
+        # so Lightning never calls setup() on it. Build here, as Sen1Floods11 does.
+        self.setup()
 
     def _build(self, split):
         cls = CREMADFeaturesSSL if self.model in ("CoMM", "WoMM", "MMSD") else CREMADFeatures
@@ -166,6 +170,8 @@ class CREMADFeaturesDataModule(LightningDataModule):
                    pooled=self.pooled, augmentations=self.augmentations)
 
     def setup(self, stage=None):
+        if getattr(self, "train_dataset", None) is not None:
+            return
         self.train_dataset = self._build("train")
         self.val_dataset = self._build("test")
         self.test_dataset = self._build("test")
