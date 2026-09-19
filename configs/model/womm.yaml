@@ -35,7 +35,7 @@ model:
     # GECO. Every knob is in EPOCH units; the step-level constants (EMA decays,
     # per-update clamp, gain) are derived in WoMMLoss.configure_schedule from the
     # actual steps_per_epoch, so one block transfers across datasets.
-    use_geco: True
+    use_geco: False                    # fixed reg_weight everywhere; GECO is opt-in
     # Phase lengths as FRACTIONS of trainer.max_epochs, resolved at runtime, so the
     # schedule follows the budget instead of being retuned per dataset.
     geco_warmup_frac: 0.25             # on fixed reg_weight before the controller starts
