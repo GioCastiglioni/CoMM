@@ -19,7 +19,7 @@ model:
     out_dim: 256
 
   loss_kwargs:
-    objective: "dino"              # 'dino' | 'jepa'
+    objective: "dino"              # 'dino' | 'byol'
     weights: null                  # per-mask weights; null = uniform
     # dino only
     student_temp: 0.1
@@ -28,26 +28,18 @@ model:
     warmup_teacher_temp_frac: 0.3
     center_momentum: 0.9
     out_dim: 2048                  # prototypes; shrink for narrow embeddings
-    # jepa only
-    huber_delta: 1.0
 
   ema_base: 0.996
   ema_final: 1.0
 
   # Self-distillation schedules; the WoMM cells have none of these.
   lr_warmup_frac: 0.1
-  wd_mult_end: 10.0                # multiplies optim.weight_decay; null keeps it flat
+  wd_mult_end: 10.0                # multiplies optim.weight_decay; dino only, since
+                                   # BYOL's paper specifies a constant decay
   freeze_last_layer_epochs: 1      # dino only
 
   # Keys differ per objective, so setting one needs Hydra's append form:
-  #   +model.model.predictor_kwargs.depth=3
+  #   +model.model.predictor_kwargs.hidden_dim=1024
   predictor_kwargs: {}
 
   cross_view: null                 # null = each objective's own default
-
-  mask_kwargs:                     # jepa only
-    mode: "block"                  # 'block' on a square token grid, 'span' otherwise
-    n_targets: 4
-    target_scale: [0.15, 0.20]
-    target_aspect: [0.75, 1.50]
-    context_scale: [0.85, 1.00]

@@ -15,7 +15,7 @@ from torch import nn
 
 
 class MMSelfDistillLoss(nn.Module):
-    OBJECTIVES = ("byol", "dino", "jepa")
+    OBJECTIVES = ("byol", "dino")
 
     def __init__(self,
                  objective: str = "byol",
@@ -26,9 +26,7 @@ class MMSelfDistillLoss(nn.Module):
                  warmup_teacher_temp: float = 0.04,
                  warmup_teacher_temp_frac: float = 0.3,
                  center_momentum: float = 0.9,
-                 out_dim: int = 2048,
-                 # jepa
-                 huber_delta: float = 1.0):
+                 out_dim: int = 2048):
         super().__init__()
         if objective not in self.OBJECTIVES:
             raise ValueError(f"Unknown objective {objective!r}, expected one of {self.OBJECTIVES}")
@@ -39,7 +37,6 @@ class MMSelfDistillLoss(nn.Module):
         self.warmup_teacher_temp = warmup_teacher_temp
         self.warmup_teacher_temp_frac = warmup_teacher_temp_frac
         self.center_momentum = center_momentum
-        self.huber_delta = huber_delta
         self.register_buffer("center", torch.zeros(1, out_dim))
         self.register_buffer("teacher_temp", torch.tensor(float(warmup_teacher_temp)))
 
@@ -68,9 +65,6 @@ class MMSelfDistillLoss(nn.Module):
         s = F.log_softmax(student / self.student_temp, dim=-1)
         return -(t * s).sum(dim=-1).mean()
 
-    def _jepa(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return F.smooth_l1_loss(pred, target, beta=self.huber_delta)
-
     @torch.no_grad()
     def update_center(self, teacher: torch.Tensor):
         if self.objective != "dino":
@@ -97,8 +91,6 @@ class MMSelfDistillLoss(nn.Module):
 
     # ---- forward ---------------------------------------------------------
     def forward(self, outputs: Dict) -> Dict[str, torch.Tensor]:
-        if self.objective == "jepa":
-            return self._forward_jepa(outputs)
         return self._forward_pooled(outputs)
 
     def _weights(self, n: int, device) -> Optional[torch.Tensor]:
@@ -134,31 +126,4 @@ class MMSelfDistillLoss(nn.Module):
                 out["teacher_pmax"] = p.max(dim=-1).values.mean()
                 out["teacher_temp_now"] = self.teacher_temp.clone()
         self.update_center(torch.cat([teacher[0], teacher[1]], dim=0))
-        return out
-
-    def _forward_jepa(self, outputs: Dict) -> Dict[str, torch.Tensor]:
-        pred, target = outputs["pred"], outputs["target"]
-        n_mask = len(pred[0])
-        per_mask = []
-        for i in range(n_mask):
-            per_mask.append(0.5 * (self._jepa(pred[0][i], target[0][i])
-                                   + self._jepa(pred[1][i], target[1][i])))
-        per_mask = torch.stack(per_mask)
-        w = self._weights(n_mask, per_mask.device)
-        loss = torch.mean(per_mask * w) if w is not None else per_mask.mean()
-
-        out = {"loss": loss}
-        out.update({f"sd_loss_{i}": v for i, v in enumerate(per_mask)})
-        if "keep_achieved" in outputs:
-            out["keep_achieved"] = torch.as_tensor(
-                outputs["keep_achieved"], device=loss.device, dtype=loss.dtype)
-        with torch.no_grad():
-            # the joint branch is last; its targets are a superset of every uni branch's
-            joint = target[0][-1]
-            out["teacher_rank"] = self._effective_rank(joint.reshape(-1, joint.shape[-1]))
-            # how much the other modality helped, per modality, on shared targets
-            for m, split in enumerate(outputs.get("joint_by_modality", [])):
-                if split is not None and split.numel() > 0:
-                    out[f"joint_on_mod{m + 1}"] = self._jepa(
-                        pred[0][-1][:, split], target[0][-1][:, split])
         return out

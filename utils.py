@@ -579,8 +579,8 @@ def build_run_identity(cfg: DictConfig,
 
     # The self-distillation family has its own axes: the objective replaces the
     # reconstruction/regularization pair, and the augmentation is a real axis there
-    # because the I-JEPA cell is meant to run with its own. Without them every MMSD
-    # cell would be named `MMSD_<arm>_s<seed>` and they would be indistinguishable.
+    # because a cell may run with its own. Without them every MMSD cell would be
+    # named `MMSD_<arm>_s<seed>` and they would be indistinguishable.
     objective = str(getattr(lk, "objective", "")) if lk is not None else ""
     has_sd_axes = bool(objective)
     aug = None
