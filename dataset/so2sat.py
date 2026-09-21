@@ -51,8 +51,7 @@ class So2SatBase(Dataset):
         """
         out = []
         for i, m in enumerate(MODALITIES):
-            # np.asarray materialises just this row out of the memory map.
-            x = torch.from_numpy(np.asarray(self.data[m][idx], dtype=np.float32))
+            x = torch.from_numpy(np.array(self.data[m][idx], dtype=np.float32))
             if self.normalizers is not None:
                 x = self.normalizers[i](x)
             out.append(self.resize(x))
