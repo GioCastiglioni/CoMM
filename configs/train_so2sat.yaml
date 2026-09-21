@@ -1,8 +1,11 @@
 seed: 42
 mode: "train"
 
-# AlexNet family, so Trifeatures' and Sen1Floods11's width.
-embed_dim: 512
+# The ViT encoders' width. So2Sat is the one dataset here read at its native
+# resolution, so it does not inherit the 512 the AlexNet datasets use; 192 with
+# depth 6 puts the encoder at 2.7M parameters, matching the AlexNet stack it
+# replaced, and keeps the fusion transformer proportionate to it.
+embed_dim: 192
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -29,24 +32,27 @@ optim:
   weight_decay: 1e-4
 
 model:
+  # Patches are 32x32 and are read as such: patch_size 4 gives an 8x8 grid, so 64
+  # tokens of 4x4 native pixels (40x40 m at Sentinel-2's 10 m). The AlexNet encoders
+  # this replaces needed the input upsampled to 224 just to yield 36 tokens.
   encoders:
-    - _target_: models.alexnet_multispectral.AlexNetMultispectralEncoder
+    - _target_: models.vit_multispectral.ViTMultispectralEncoder
       in_channels: 2      # Sentinel-1: VV, VH
-      global_pool: ""
-    - _target_: models.alexnet_multispectral.AlexNetMultispectralEncoder
+      img_size: ${data.data_module.image_size}
+      patch_size: 4
+      embed_dim: ${embed_dim}
+      depth: 6
+      n_heads: 3
+    - _target_: models.vit_multispectral.ViTMultispectralEncoder
       in_channels: 10     # Sentinel-2: B02..B12
-      global_pool: ""
+      img_size: ${data.data_module.image_size}
+      patch_size: 4
+      embed_dim: ${embed_dim}
+      depth: 6
+      n_heads: 3
 
+  # The encoders already emit tokens at the fusion width, so no latent converter is
+  # needed -- the same arrangement the MultiBench Transformer encoders use.
   adapters:
-    - _target_: models.input_adapters.PatchedInputAdapter
-      num_channels: 256
-      stride_level: 1
-      patch_size_full: 1
-      dim_tokens: ${model.model.encoder.embed_dim}
-      image_size: 6
-    - _target_: models.input_adapters.PatchedInputAdapter
-      num_channels: 256
-      stride_level: 1
-      patch_size_full: 1
-      dim_tokens: ${model.model.encoder.embed_dim}
-      image_size: 6
+    - null
+    - null

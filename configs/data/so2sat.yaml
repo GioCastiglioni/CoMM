@@ -2,8 +2,9 @@ name: "so2sat"
 
 data_module:
   _target_: dataset.so2sat.So2SatDataModule
-  # Patches are 32x32 and AlexNet cannot run below 64, yielding a single token at
-  # 64. At 224 the feature map is 6x6, as on Trifeatures and Sen1Floods11.
-  image_size: 224
+  # Native resolution: the ViT encoders tokenise 32x32 directly, so nothing is
+  # upsampled. `Resize(32)` on a 32x32 patch is a no-op and is kept only so the
+  # data module stays usable at other sizes.
+  image_size: 32
   batch_size: 64
   num_workers: 4

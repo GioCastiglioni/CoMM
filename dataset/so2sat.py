@@ -25,10 +25,9 @@ MODALITIES = ("s1", "s2")
 class So2SatBase(Dataset):
     """One split, with both sensors memory-mapped.
 
-    Patches are 32x32. They are resized to `image_size` because the AlexNet
-    encoder cannot run below 64 and yields a single token at 64 -- which would
-    leave MM-I-JEPA's sampler with an empty context. At 224 the feature map is
-    6x6, matching Trifeatures and Sen1Floods11.
+    Patches are 32x32 and `image_size` defaults to that, so the resize is a no-op
+    and the ViT encoders tokenise the native grid. Larger values still work, for
+    an encoder that needs them.
     """
 
     def __init__(self, root: str, split: str = "train", image_size: int = 224,
@@ -139,8 +138,12 @@ class So2SatDataModule(LightningDataModule):
             v2.RandomHorizontalFlip(),
             v2.RandomVerticalFlip(),
         ])
+        # The blur kernel is a fraction of the image, not a constant: 11 px was
+        # chosen against a 224 px input (~5%), and reusing it on a 32 px patch
+        # would erase the patch rather than blur it.
+        k = max(3, int(round(0.05 * image_size)) | 1)
         self.pixel_augment = v2.Compose([
-            v2.RandomApply([v2.GaussianBlur(kernel_size=(11, 11))], p=0.8),
+            v2.RandomApply([v2.GaussianBlur(kernel_size=(k, k))], p=0.8),
         ])
 
         # The probe callbacks hold a data module that is never handed to a Trainer,
