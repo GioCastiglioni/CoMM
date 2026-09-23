@@ -10,7 +10,8 @@ import torch.utils.data.distributed
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
+from pytorch_lightning.callbacks import ModelCheckpoint
+from utils import setup_resume, build_run_identity, WANDB_PROJECT
 
 
 # Sentinel-1 + Sentinel-2, so the joint mask keeps the name `both` as in the other
@@ -62,15 +63,26 @@ def main(cfg: DictConfig):
                              _convert_="all")
                  for m, mask in PROBE_MASKS.items()]
 
-    # Resuming: `ckpt_path` continues training from a finished run and `wandb_id`
-    # keeps the curves in that run instead of opening a second one.
-    resume_ckpt = getattr(cfg, "ckpt_path", None) if cfg.mode == "train" else None
-    wandb_id = getattr(cfg, "wandb_id", None)
-    wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
-
     identity = build_run_identity(cfg, dataset=dataset, stage="pretrain")
     run_name = identity.name
-    results_dir = setup_results_dir(cfg, run_name)
+
+    # Resuming. The cluster requeues preempted jobs without warning, so this has to
+    # work unattended: the run's directory is keyed on its identity rather than the
+    # clock, `last.ckpt` is written every epoch, and a requeue picks it up here. An
+    # explicit `ckpt_path` still wins, for resuming a run by hand.
+    results_dir, ckpt_dir, found_ckpt, wandb_id = setup_resume(cfg, run_name)
+    resume_ckpt = (getattr(cfg, "ckpt_path", None) or found_ckpt) \
+        if cfg.mode == "train" else None
+    wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
+    if resume_ckpt:
+        print(f"[main] resuming from {resume_ckpt}")
+
+    # `save_last` is the whole point: one rolling checkpoint per run, which bounds a
+    # preemption's cost to the epoch in flight. `save_top_k=0` keeps no others --
+    # nothing is selected on a metric here, the reported number comes from the final
+    # weights, so a "best" checkpoint would only cost disk.
+    callbacks = callbacks + [ModelCheckpoint(dirpath=ckpt_dir, save_last=True,
+                                             save_top_k=0, every_n_epochs=1)]
 
     # Trainer + fit
     trainer = instantiate(

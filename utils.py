@@ -675,6 +675,49 @@ def build_run_identity(cfg: DictConfig,
 
 import time
 
+def setup_resume(cfg: DictConfig, run_name: str) -> Tuple[str, str, Optional[str], str]:
+    """Everything a requeued job needs to continue instead of starting over.
+
+    SLURM requeues a preempted job with the same script and no warning, so a run
+    has to be able to find its own past on disk. `setup_results_dir` cannot serve
+    that: it stamps the directory with the wall clock, so a requeue lands in a
+    fresh one and the previous checkpoint becomes unreachable -- which is how a
+    run that had reached epoch 73 restarted from zero, twice.
+
+    The directory here is keyed on the run's identity instead, which is built from
+    (dataset, model, cell, seed) and is therefore stable across requeues by
+    construction.
+
+    Returns `(results_dir, ckpt_dir, ckpt_path, wandb_id)`:
+      * `ckpt_path` is `last.ckpt` when one exists and None on a first run, so it
+        can be handed straight to `trainer.fit`;
+      * `wandb_id` keeps every attempt writing into one W&B run instead of opening
+        a new one per requeue. It is generated once and stored beside the
+        checkpoints, so deleting the directory is what starts a genuinely new run.
+    """
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    results_dir = os.path.join(repo_root, "results", run_name)
+    if getattr(cfg, "exp_name", None) is not None:
+        results_dir = os.path.join(results_dir, cfg.exp_name)
+    ckpt_dir = os.path.join(results_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    last = os.path.join(ckpt_dir, "last.ckpt")
+    ckpt_path = last if os.path.isfile(last) else None
+
+    # An explicit `wandb_id` override wins, then the stored one, then a fresh id.
+    id_file = os.path.join(results_dir, "wandb_id")
+    wandb_id = getattr(cfg, "wandb_id", None)
+    if wandb_id is None and os.path.isfile(id_file):
+        wandb_id = (open(id_file).read().strip() or None)
+    if wandb_id is None:
+        import wandb as _wandb
+        wandb_id = _wandb.util.generate_id()
+        with open(id_file, "w") as f:
+            f.write(wandb_id)
+    return results_dir, ckpt_dir, ckpt_path, wandb_id
+
+
 def setup_results_dir(cfg: DictConfig, run_name: str):
     # Determine repository root
     repo_root = os.path.dirname(os.path.abspath(__file__))
