@@ -306,3 +306,13 @@ dependencies:
   - zipp=3.11.0=py38h06a4308_0
   - zlib=1.2.13=h5eee18b_0
   - zstd=1.5.5=hc292b87_0
+  - pip:
+      # Not on the conda channels used above at this version, and required at
+      # import time: `dataset/affect/get_data.py` imports it at module scope, so
+      # without it every MultiBench dataset fails to import even when the pickles
+      # are already on disk and nothing is downloaded.
+      - gdown==5.2.2
+      # Imported at module scope by every `main_*.py` and the only logger the
+      # training configs declare, so a fresh environment cannot run anything
+      # without it.
+      - wandb==0.24.2
