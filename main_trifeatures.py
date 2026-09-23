@@ -72,7 +72,9 @@ def main(cfg: DictConfig):
     # pick a cost that crushes the probe into predicting the majority class, which
     # reports exactly 50.0 on a balanced binary task.
     # There is no fine-tuning stage here: these accuracies are the result.
-    probe_every_n_epochs = 1
+    # Curves only: `trainer.test` below re-runs every probe on the final weights and
+    # `on_test_start` ignores this setting, so thinning them changes no reported number.
+    probe_every_n_epochs = int(getattr(cfg, "probe_every_n_epochs", 1))
 
     callbacks = [LinearProbingCallback([downstream_data_module],
                                        names=[f"{t}_{m}" for t in downstream_names],
@@ -88,8 +90,11 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
+    # `group_suffix` marks an ablation of the pipeline itself, so its runs do not
+    # land in the same cell as the reference ones when the results are harvested.
     identity = build_run_identity(cfg, dataset="trifeatures", stage="pretrain",
-                                  arm="biased" if biased else "unbiased")
+                                  arm="biased" if biased else "unbiased",
+                                  group_suffix=getattr(cfg, "group_suffix", None))
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
