@@ -42,6 +42,7 @@ class MultiBenchDataModule(LightningDataModule):
                  model: str,
                  batch_size: int = 32,
                  num_workers: int = 0,
+                 drop_last: bool = False,
                  **kwargs):
         """
         Args:
@@ -60,6 +61,11 @@ class MultiBenchDataModule(LightningDataModule):
         self.dataset = dataset
         self.model = model
         self.batch_size = batch_size
+        # Train only. A contrastive regularizer's candidate set IS the batch, so a
+        # short final batch is a different objective, not a noisier gradient -- and
+        # its share of the steps grows with the batch size, which would confound a
+        # batch-size ablation. Eval loaders always keep every sample.
+        self.drop_last = drop_last
         self.num_workers = num_workers
         self.dataset_kwargs = kwargs
 
@@ -90,7 +96,7 @@ class MultiBenchDataModule(LightningDataModule):
     def train_dataloader(self):
         return torch.utils.data.DataLoader(
             self.train_dataset, batch_size=self.batch_size, collate_fn=self.train_dataset.collate_fn,
-            shuffle=True, num_workers=self.num_workers, pin_memory=True, drop_last=False)
+            shuffle=True, num_workers=self.num_workers, pin_memory=True, drop_last=self.drop_last)
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(
