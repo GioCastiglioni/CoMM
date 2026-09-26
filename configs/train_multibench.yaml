@@ -47,6 +47,11 @@ visionandtouch: # Image + Force to predict proprioception (regression task)
   # Appendix B.1: ResNet18 with a 128-d output space and a 5-layer causal
   # convolution network also at 128-d. Both adapters below emit `dim_tokens: 128`.
   embed_dim: 128
+  # Appendix B.4 groups V&T with MM-IMDb, not with the affective datasets: the
+  # root `optim` block above is 10x this learning rate.
+  optim:
+    lr: 1e-4
+    weight_decay: 1e-2
   modalities:
     - "image"
     - "force"
