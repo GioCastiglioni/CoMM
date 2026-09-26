@@ -55,7 +55,11 @@ def main(cfg: DictConfig):
     # fallback, so copy it up before the model is built.
     if "embed_dim" in cfg[dataset]:
         cfg.embed_dim = cfg[dataset].embed_dim
-    print(f"[main] {dataset}: embed_dim={cfg.embed_dim}")
+    # Appendix B.4 also gives a different learning rate per dataset.
+    if "optim" in cfg[dataset]:
+        cfg.optim = cfg[dataset].optim
+    print(f"[main] {dataset}: embed_dim={cfg.embed_dim} "
+          f"lr={cfg.optim.lr} wd={cfg.optim.weight_decay}")
 
     kwargs = dict()
     if cfg.model.name in ("CoMM", "WoMM", "MMSD"):
@@ -110,8 +114,11 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
+    # `group_suffix` marks an ablation of the pipeline itself, so its runs do not
+    # land in the same cell as the reference ones when the results are harvested.
     identity = build_run_identity(cfg, dataset=dataset, stage="pretrain",
-                                  extra={"n_modalities": len(modalities)})
+                                  extra={"n_modalities": len(modalities)},
+                                  group_suffix=getattr(cfg, "group_suffix", None))
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 
