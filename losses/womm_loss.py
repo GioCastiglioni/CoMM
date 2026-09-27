@@ -18,6 +18,16 @@ class WoMMLoss(nn.Module):
                           'neg-samples-dcl-cross', 'neg-samples-cross')
     PROTO_ONLY_REGS = ('sigreg-multi', 'visreg-multi')
     PER_MASK_REGS = ('sigreg-permask',)
+    # name -> (mode, gaussian regularizer, contrastive regularizer), combined as
+    # 0.5 * ((1 - mix_rho) * gaussian + mix_rho * contrastive).
+    #   mix  : both act on the whole embedding.
+    #   split: the contrastive one sees the first half of the coordinates and the
+    #          gaussian one the second half. With the MSE alignment averaging over
+    #          coordinates, each half is then its own single-regularizer objective.
+    COMPOSITE_REGS = {
+        'mix-sigreg-neg-samples': ('mix', 'sigreg', 'neg-samples'),
+        'split-sigreg-neg-samples': ('split', 'sigreg', 'neg-samples'),
+    }
     SEM_AWARE_MARGIN = 0.5
 
     def __init__(
@@ -28,8 +38,9 @@ class WoMMLoss(nn.Module):
         temperature=0.1,
         sigma_max=2.0, 
         sigma_min=0.5, 
-        reg_weight=0.05, 
-        K=4096, 
+        reg_weight=0.05,
+        mix_rho=0.95,
+        K=4096,
         stop_grad=False,
         vicreg_inv_coeff=25.0,
         vicreg_std_coeff=25.0,
@@ -63,6 +74,13 @@ class WoMMLoss(nn.Module):
         self.sigma_min = sigma_min
         self.sigma = sigma_max
         self.reg_weight = reg_weight
+        self.mix_rho = mix_rho
+        if regularization in self.COMPOSITE_REGS:
+            if reconstruction == 'cosine':
+                raise ValueError(f"{regularization} needs an unnormalized alignment: a gaussian "
+                                 "regularizer cannot be satisfied by unit vectors")
+            if not 0.0 <= mix_rho <= 1.0:
+                raise ValueError(f"mix_rho must lie in [0, 1], got {mix_rho}")
         self.stop_grad = stop_grad
         self.K = K
         self.INF = 1e8
@@ -124,7 +142,9 @@ class WoMMLoss(nn.Module):
         self._cached_B = -1
         self._cached_target = None
 
-        if self.regularization in ('sigreg', 'sigreg-multi', 'sigreg-permask'):
+        gaussian = self.COMPOSITE_REGS[regularization][1] if regularization in self.COMPOSITE_REGS \
+            else regularization
+        if gaussian in ('sigreg', 'sigreg-multi', 'sigreg-permask'):
             self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=self.K)
 
     def configure_schedule(self, steps_per_epoch: int, total_epochs: int = 100):
@@ -470,6 +490,45 @@ class WoMMLoss(nn.Module):
         return self._neg_samples_reduce(
             self._neg_samples_matrix(x, y, semantic_margin), drop_pos)
 
+    def _composite_reg(self, z1_all, z2_all, prototype, w_tensor):
+        """A regularizer of COMPOSITE_REGS, and the constraint GECO would read from it."""
+        mode, gaussian, contrastive = self.COMPOSITE_REGS[self.regularization]
+        D = z1_all[0].shape[-1]
+        if mode == 'split':
+            c_dims, g_dims = slice(0, D // 2), slice(D // 2, D)
+        else:
+            c_dims = g_dims = slice(None)
+
+        def reduce(vals):
+            vals = torch.stack(vals)
+            return torch.mean(vals * w_tensor) if w_tensor is not None else vals.mean()
+
+        drop_pos = contrastive in ('neg-samples-dcl', 'neg-samples-dcl-cross')
+        cross = contrastive in ('neg-samples-cross', 'neg-samples-dcl-cross')
+        regs, cons = [], []
+        for i in range(len(z1_all)):
+            tgt1 = z2_all[prototype].detach() if self.stop_grad else z2_all[prototype]
+            tgt2 = z1_all[prototype].detach() if self.stop_grad else z1_all[prototype]
+            reg1, cons1 = self._neg_samples_pair(z1_all[i][..., c_dims], tgt1[..., c_dims],
+                                                 None, drop_pos, cross)
+            reg2, cons2 = self._neg_samples_pair(z2_all[i][..., c_dims], tgt2[..., c_dims],
+                                                 None, drop_pos, cross)
+            regs.append((reg1 + reg2) / 2.0)
+            cons.append((cons1 + cons2) / 2.0)
+        reg_c, cons_c = reduce(regs), reduce(cons)
+
+        if gaussian == 'sigreg':
+            reg_g = self.sigreg(torch.cat(list(z1_all) + list(z2_all), dim=0)[..., g_dims])
+        elif gaussian == 'sigreg-permask':
+            reg_g = reduce([self.sigreg(torch.cat([z1_all[i], z2_all[i]], dim=0)[..., g_dims])
+                            for i in range(len(z1_all))])
+        else:
+            raise ValueError(f"Unsupported gaussian part {gaussian!r} in {self.regularization}")
+
+        rho = self.mix_rho
+        return (0.5 * ((1 - rho) * reg_g + rho * reg_c),
+                0.5 * ((1 - rho) * reg_g.detach() + rho * cons_c))
+
     def off_diagonal(self, x):
         n, m = x.shape
         assert n == m
@@ -587,6 +646,8 @@ class WoMMLoss(nn.Module):
         elif self.regularization == 'visreg-multi':
             loss_reg = 0.5 * (self.forward_visreg(z1_all[prototype].unsqueeze(0))
                               + self.forward_visreg(z2_all[prototype].unsqueeze(0)))
+        elif self.regularization in self.COMPOSITE_REGS:
+            loss_reg, reg_constraint = self._composite_reg(z1_all, z2_all, prototype, w_tensor)
         elif self.regularization in self.PER_EMBED_NEG_REGS:
             if w_tensor is not None:
                 loss_reg = torch.mean(torch.stack(loss_reg_local) * w_tensor)

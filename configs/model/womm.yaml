@@ -23,6 +23,7 @@ model:
     reconstruction: "cosine"       # 'mse' 'l1' 'huber' 'rbf' 'cosine'
     regularization: "neg-samples"
     reg_weight: 0.5
+    mix_rho: 0.95                  # only read by the composite regularizers (mix-*, split-*)
     temperature: 0.1
     sigma_max: 2.0
     sigma_min: 0.5
