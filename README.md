@@ -195,21 +195,18 @@ done
 
 Uniqueness and redundancy are read from the `unbiased` arm and synergy from the `biased` one.
 
-**MultiBench and So2Sat.** MOSI and UR-FUNNY are reported at the batch size of 64 of the batch-size ablation below, dropping the last incomplete batch of each epoch. MUStARD and So2Sat use their default protocol.
+**MultiBench and So2Sat**, with the default protocol of each dataset:
 
 ```sh
-for ds in mosi humor; do
-  CELLS="@negsamples @gauss" PROBE_EVERY=1000 \
-  HYDRA_EXTRA="data.data_module.batch_size=64 +data.data_module.drop_last=true +group_suffix=bs64" \
-    sbatch -J ${ds}_bs64 scripts/run_cell.sh $ds - - - - "$SEEDS"
+for ds in mosi humor sarcasm; do
+  CELLS="@negsamples @gauss" PROBE_EVERY=1000 sbatch -J $ds scripts/run_cell.sh $ds - - - - "$SEEDS"
 done
-CELLS="@negsamples @gauss" PROBE_EVERY=1000 sbatch -J sarcasm scripts/run_cell.sh sarcasm - - - - "$SEEDS"
 for group in @negsamples-a @negsamples-b @gauss; do
   CELLS="$group" PROBE_EVERY=1000 sbatch -J so2sat_${group#@} scripts/run_cell.sh so2sat - - - - "$SEEDS"
 done
 ```
 
-**Batch-size ablation**, on MOSI and UR-FUNNY. `B=64` is the run of the main table above. The cost of a cell grows as the batch shrinks, since an epoch takes more steps, so the cells are grouped differently per batch size to fit 24-hour jobs. Measured on one H100 with five concurrent seeds:
+**Batch-size ablation**, on MOSI and UR-FUNNY. Every batch size drops the last incomplete batch of each epoch (`drop_last=true`), so that every step uses exactly `B` samples. The default protocol keeps that batch, so `B=64` runs here separately from the main table. The cost of a cell grows as the batch shrinks, since an epoch takes more steps, so the cells are grouped differently per batch size to fit 24-hour jobs. Measured on one H100 with five concurrent seeds:
 
 | Batch size | MOSI | UR-FUNNY |
 |---|---|---|
@@ -227,8 +224,8 @@ bs() {
     sbatch -J "$4" scripts/run_cell.sh "$1" - - - - "${5:-$SEEDS}"
 }
 
-for B in 4 16 256; do bs mosi $B "@negsamples @gauss" mosi_bs$B; done
-bs humor 256 "@negsamples @gauss" humor_bs256
+for B in 4 16 64 256; do bs mosi $B "@negsamples @gauss" mosi_bs$B; done
+for B in 64 256; do bs humor $B "@negsamples @gauss" humor_bs$B; done
 bs humor 16 "@negsamples" humor_bs16_negs
 bs humor 16 "@gauss" humor_bs16_gauss
 for cell in cosine:neg-samples:1.0 cosine:neg-samples-dcl:1.0 cosine:neg-samples-cross:1.0 \
