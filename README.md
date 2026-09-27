@@ -2,11 +2,11 @@
 
 ReMM (**Re**gularized **M**ulti**M**odal learning) writes multimodal self-supervised objectives as
 
-$$\mathcal{L}_{\text{ReMM}} = \mathcal{L}_{\text{align}} + \lambda\,\mathcal{L}_{\text{reg}},$$
+```math
+\mathcal{L}_{\text{ReMM}} = \mathcal{L}_{\text{align}} + \lambda\,\mathcal{L}_{\text{reg}},
+```
 
-where $\mathcal{L}_{\text{align}}$ aligns unimodal and multimodal embeddings across augmented views, and $\mathcal{L}_{\text{reg}}$ prevents collapse. [CoMM](https://arxiv.org/abs/2409.07402) is the special case of cosine alignment with an InfoNCE regularizer and $\lambda = 1$, and this repository reduces to it exactly. The study replaces the regularizer by other contrastive candidate sets and by Gaussian regularizers (SIGReg, VISReg), and measures the redundancy, uniqueness and synergy each one retains.
-
-This repository is built on the code of CoMM, and keeps its name for now.
+where $`\mathcal{L}_{\text{align}}`$ aligns unimodal and multimodal embeddings across augmented views, and $`\mathcal{L}_{\text{reg}}`$ prevents collapse. This repository is a fork from [CoMM](https://arxiv.org/abs/2409.07402), which remains a case of the framework. The study replaces the regularizer by other contrastive candidate sets and by Gaussian regularizers (SIGReg, VISReg), and measures the redundancy, uniqueness and synergy each one retains.
 
 - [Installation](#installation)
 - [Data](#data)
@@ -209,7 +209,7 @@ for group in @negsamples-a @negsamples-b @gauss; do
 done
 ```
 
-**Batch-size ablation**, on MOSI and UR-FUNNY, at the learning rate of each dataset's config. `B=64` is the run of the main table above. The cost of a cell grows as the batch shrinks, since an epoch takes more steps, so the cells are grouped differently per batch size to fit 24-hour jobs. Measured on one H100 with five concurrent seeds:
+**Batch-size ablation**, on MOSI and UR-FUNNY. `B=64` is the run of the main table above. The cost of a cell grows as the batch shrinks, since an epoch takes more steps, so the cells are grouped differently per batch size to fit 24-hour jobs. Measured on one H100 with five concurrent seeds:
 
 | Batch size | MOSI | UR-FUNNY |
 |---|---|---|
@@ -220,10 +220,10 @@ done
 | 1024 | — | 7 cells, seeds split 3 + 2 over two jobs |
 
 ```sh
-# bs <dataset> <batch size> <cells> <job name> [seeds] [extra overrides]
+# bs <dataset> <batch size> <cells> <job name> [seeds]
 bs() {
   CELLS="$3" PROBE_EVERY=1000 \
-  HYDRA_EXTRA="data.data_module.batch_size=$2 +data.data_module.drop_last=true ${6:-+group_suffix=bs$2}" \
+  HYDRA_EXTRA="data.data_module.batch_size=$2 +data.data_module.drop_last=true +group_suffix=bs$2" \
     sbatch -J "$4" scripts/run_cell.sh "$1" - - - - "${5:-$SEEDS}"
 }
 
@@ -237,12 +237,11 @@ for cell in cosine:neg-samples:1.0 cosine:neg-samples-dcl:1.0 cosine:neg-samples
 done
 ```
 
-At `B=1024` the five seeds do not fit together in the memory of one 80 GB GPU, so they are split over two jobs. UR-FUNNY runs there at the reference learning rate, and again at the learning rate scaled by the square-root rule, $10^{-3}\sqrt{1024/64} = 4\times10^{-3}$:
+At `B=1024` the five seeds do not fit together in the memory of one 80 GB GPU, so they are split over two jobs:
 
 ```sh
 for seeds in "42 1234 2026" "1 7"; do
   bs humor 1024 "@negsamples @gauss" humor_bs1024 "$seeds"
-  bs humor 1024 "@negsamples @gauss" humor_sqrtlr_bs1024 "$seeds" "optim.lr=4e-3 +group_suffix=sqrtlr_bs1024"
 done
 ```
 
