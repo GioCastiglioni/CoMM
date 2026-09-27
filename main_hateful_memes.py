@@ -8,7 +8,6 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import wandb
 from utils import setup_results_dir, build_run_identity, WANDB_PROJECT
@@ -58,10 +57,11 @@ def main(cfg: DictConfig):
                              always_prefix=True,
                              _convert_="all")
                  for m, mask in PROBE_MASKS.items()]
-    # `save_last` gives the resume path a deterministic target; the monitored copy
-    # keeps CoMM's original protocol (best epoch on the eval split) available.
-    callbacks.append(ModelCheckpoint(monitor="roc_auc_{}_both".format(dataset),
-                                     mode="max", save_top_k=1, save_last=True))
+    # No monitored checkpoint: the reported number is the probe of the final weights,
+    # so picking a best epoch on the eval split is never used, and with the probe
+    # thinned (`every_n_epochs` > 1) a monitored key is missing on most epochs, which
+    # Lightning raises on. The default callback keeps one checkpoint, the last epoch,
+    # which is also what RESUME reads. The frozen encoders make each one ~1 GB.
 
     # Resuming: `ckpt_path` continues training from a finished run and `wandb_id`
     # keeps the curves in that run instead of opening a second one.
@@ -69,7 +69,12 @@ def main(cfg: DictConfig):
     wandb_id = getattr(cfg, "wandb_id", None)
     wandb_resume = {"id": wandb_id, "resume": "allow"} if wandb_id else {}
 
-    identity = build_run_identity(cfg, dataset=dataset, stage="pretrain")
+    # `group_suffix` marks an ablation of the pipeline itself, so its runs do not
+    # land in the same cell as the reference ones when the results are harvested.
+    identity = build_run_identity(cfg, dataset=dataset, stage="pretrain",
+                                  group_suffix=getattr(cfg, "group_suffix", None))
+    print(f"[main] {dataset}: embed_dim={cfg.embed_dim} lr={cfg.optim.lr} "
+          f"wd={cfg.optim.weight_decay} epochs={cfg.trainer.max_epochs}")
     run_name = identity.name
     results_dir = setup_results_dir(cfg, run_name)
 

@@ -1,8 +1,10 @@
 seed: 42
 mode: "train"
 
-# Fusion width for this dataset: frozen ViT-B/32 + Sentence-BERT token embeddings.
-embed_dim: 512
+# Fusion width: the token embeddings of both frozen encoders are 768-d (ViT-B/32 with
+# its projection head removed by models.vit, and the multilingual DistilBERT under
+# Sentence-BERT), so they enter the fusion as they are, with no latent converter.
+embed_dim: 768
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -10,6 +12,8 @@ trainer:
   strategy: 'ddp_find_unused_parameters_true'
   devices: "auto"
   num_nodes: 1 # Number of distributed nodes
+  # CoMM appendix B.4: every model is optimized for 100 epochs. (Table 2's caption
+  # says "after 70 epochs"; B.4 and the upstream config agree on 100.)
   max_epochs: 100
   default_root_dir: "."
   use_distributed_sampler: false
@@ -22,9 +26,11 @@ linear_probing:
   _target_: evaluation.linear_probe.LinearProbingCallback
   multilabel: true
   use_sklearn: True
-  fastsearch: true
+  # Two-stage sweep of the inverse regularization strength, as everywhere else in the study.
+  fastsearch: false
   logging_level: "INFO"
   frequency: "by_epoch"
+  every_n_epochs: 1
 
 optim:
   lr: 1e-4
@@ -49,6 +55,10 @@ mmimdb:
     - _target_: models.transformer.LanguageEncoder # CLIP pre-trained text encoder
       model_name: clip-ViT-B-32-multilingual-v1 # pre-trained model (frozen)
       output_value: 'token_embeddings'
+      # CoMM appendix B.2: 15% of the input tokens are masked for raw text. The
+      # dataset's own text augmentation is the identity, so without this both
+      # views of a caption would be identical.
+      mask_prob: 0.15
       normalize_embeddings: true
       use_dataset_cache: false
       freeze: true
