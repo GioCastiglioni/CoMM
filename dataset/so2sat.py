@@ -1,7 +1,7 @@
 """So2Sat LCZ42 (GeoBench v2): Sentinel-1 SAR + Sentinel-2 optical.
 
 Local Climate Zone classification over 17 balanced classes, read from the
-per-split `.npy` arrays written by `analysis/convert_so2sat.py`. The published
+per-split `.npy` arrays written by `scripts/convert_so2sat.py`. The published
 distribution is a single `.tortilla`, whose reader needs Python >= 3.9 while the
 training environment is 3.8; converting once keeps this module dependency-free
 and memory-mappable, the same route CREMA-D's features take.

@@ -9,11 +9,11 @@ length as little-endian u64), the data blobs, and a Parquet footer holding the
 index. Each top-level row is itself a tortilla whose two entries are the S1 and
 S2 GeoTIFFs, so the parse recurses once.
 
-Run under an environment with pyarrow (e.g. the `CropCon` env), not under the
-training environment:
+It needs numpy, pyarrow and rasterio, which the training environment lacks, so it
+runs under a separate one. `--root` is the directory holding the downloaded
+`geobench_so2sat.tortilla`; the arrays are written to `<root>/arrays`:
 
-    conda activate CropCon
-    python analysis/convert_so2sat.py --root ~/workspace/datasets/so2sat
+    python scripts/convert_so2sat.py --root /data/remm/so2sat
 """
 import argparse
 import io

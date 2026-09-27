@@ -6,3 +6,4 @@
 **/results/
 **/multirun/
 *.bak*
+slurm_out/
