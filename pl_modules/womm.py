@@ -97,6 +97,34 @@ class WoMM(BaseModel):
         return masks
     
     
+    def _frozen_encoder_keys(self) -> List[str]:
+        """State-dict keys of the pre-trained encoders loaded frozen (`freeze=True`).
+
+        Keyed on the flag rather than on `requires_grad`: the MultiBench transformers
+        also hold non-trainable parameters (fixed sin-cos positions), and those stay in
+        the checkpoint so that nothing changes for the datasets trained end to end.
+        """
+        return [f"encoder.encoders.{i}.{name}"
+                for i, enc in enumerate(self.encoder.encoders) if getattr(enc, "freeze", False)
+                for name, _ in enc.named_parameters()]
+
+    def on_save_checkpoint(self, checkpoint: Dict) -> None:
+        # Frozen pre-trained encoders are rebuilt from their released weights whenever
+        # the model is instantiated, so a checkpoint only needs what training changes.
+        # On MM-IMDb and Hateful Memes that drops ~1 GB per run; where the encoders are
+        # trained (Trifeatures, MultiBench) the list is empty and nothing changes.
+        state = checkpoint["state_dict"]
+        for key in self._frozen_encoder_keys():
+            state.pop(key, None)
+
+    def on_load_checkpoint(self, checkpoint: Dict) -> None:
+        # Restore the dropped keys from the freshly instantiated model, so resuming
+        # and `load_from_checkpoint` still load strictly.
+        state, own = checkpoint["state_dict"], self.state_dict()
+        for key in self._frozen_encoder_keys():
+            if key not in state:
+                state[key] = own[key]
+
     def extract_features(self, loader: torch.utils.data.DataLoader, **kwargs):
         """
            Extract multimodal features from the encoder.
